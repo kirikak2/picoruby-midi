@@ -1,0 +1,102 @@
+# @sidebar midi
+module MIDI
+  PPQ: Integer
+
+  # MIDI status bytes
+  STATUS_NOTE_OFF: Integer
+  STATUS_NOTE_ON: Integer
+  STATUS_POLY_AFTERTOUCH: Integer
+  STATUS_CONTROL_CHANGE: Integer
+  STATUS_PROGRAM_CHANGE: Integer
+  STATUS_CHANNEL_PRESSURE: Integer
+  STATUS_PITCH_BEND: Integer
+  STATUS_SYSEX_START: Integer
+  STATUS_SYSEX_END: Integer
+  STATUS_TIMING_CLOCK: Integer
+  STATUS_START: Integer
+  STATUS_CONTINUE: Integer
+  STATUS_STOP: Integer
+
+  def self.start!: (?bpm: (Integer|Float|^() -> Numeric), ?output: Device?, ?sync: untyped, ?subdivisions: Integer) { (Clock) -> void } -> void
+  def self.bpm_loop: (?(Integer|Float) bpm, ?output: Device?, ?subdivisions: Integer, ?send_start: bool, ?sync: bool, ?input: Input?, ?on_loop: untyped, ?on_error: untyped, ?bpm_source: untyped) { (Clock) -> void } -> void
+  def self.on_bpm_change: () { (Float) -> void } -> untyped
+  def self.input: (Device device) -> Input
+  def self.clock: (?Device? device) -> Clock
+  def self.sleep_ms: (Integer ms) -> void
+  def self.usb_host_device: () -> Device?
+  def self.sam2695_device: (Integer tx_pin, ?Integer rx_pin) -> Device?
+
+  module Notes
+    def self.number: (String name, Integer octave) -> Integer
+    def self.name: (Integer midi_note) -> String
+  end
+
+  class Device
+    @transport: untyped
+    @cable: Integer
+
+    def initialize: (untyped transport) -> void
+    def connected?: () -> bool
+    def info: () -> (Hash[Symbol, untyped] | nil)
+
+    def note_on: (Integer note, ?Integer velocity, ?channel: Integer) -> Integer
+    def note_off: (Integer note, ?Integer velocity, ?channel: Integer) -> Integer
+    def trigger: (Integer note, ?Integer velocity, ?duration: Integer, ?channel: Integer) -> Integer
+    def trigger_batch: (Array[Hash[Symbol, untyped]] events) -> Integer
+
+    def control_change: (Integer cc, Integer value, ?channel: Integer) -> Integer
+    def program_change: (Integer program, ?channel: Integer) -> Integer
+    def pitch_bend: (Integer value, ?channel: Integer) -> Integer
+    def poly_aftertouch: (Integer note, Integer pressure, ?channel: Integer) -> Integer
+    def channel_pressure: (Integer pressure, ?channel: Integer) -> Integer
+
+    def modulation: (Integer value, ?channel: Integer) -> Integer
+    def volume: (Integer value, ?channel: Integer) -> Integer
+    def pan: (Integer value, ?channel: Integer) -> Integer
+    def expression: (Integer value, ?channel: Integer) -> Integer
+    def sustain: (bool on_off, ?channel: Integer) -> Integer
+
+    def all_notes_off: (?channel: Integer) -> Integer
+    def all_sound_off: (?channel: Integer) -> Integer
+    def reset_all_controllers: (?channel: Integer) -> Integer
+
+    def send_clock: () -> Integer
+    def send_start: () -> Integer
+    def send_stop: () -> Integer
+    def send_continue: () -> Integer
+  end
+
+  class Input
+    @transport: untyped
+    @handlers: Hash[Symbol, Array[Proc]]
+    @task_started: bool
+
+    def initialize: (Device device, ?auto_process: bool) -> void
+    def on: (Symbol event_type) { (Hash[Symbol, untyped]) -> void } -> Input
+    def start: () -> Input
+    def stop: () -> Input
+    def running?: () -> bool
+    def process: (?Integer max_events) -> Integer
+    def events_available: () -> Integer
+    def external_bpm: () -> Float
+  end
+
+  class Clock
+    @device: Device?
+    @bpm: Float
+
+    def initialize: (?Device? device) -> void
+    def bpm: () -> Float
+    def bpm=: ((Float|Integer) new_bpm) -> Float
+    def start: () -> Clock
+    def stop: () -> Clock
+    def continue: () -> Clock
+    def running?: () -> bool
+    def receive_clock: () -> void
+    def receive_start: () -> void
+    def receive_stop: () -> void
+    def external_bpm: () -> Float
+    def sync_to_external: () -> bool
+    def self.bpm_to_interval_us: ((Float|Integer) bpm) -> Integer
+  end
+end
