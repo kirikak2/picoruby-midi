@@ -21,8 +21,11 @@ module MIDI
     end
 
     # Unregister a callback previously returned by on_bpm_change.
+    # mrubyc does not implement Array#delete(value); use delete_if so the
+    # ensure-paths in start!/bpm_loop don't blow up with NoMethodError and
+    # mask the actual exception that triggered the unwind.
     def off_bpm_change(handler)
-      $__midi_bpm_change_handlers__.delete(handler)
+      $__midi_bpm_change_handlers__.delete_if { |h| h == handler }
     end
 
     # Notify all registered handlers of a new BPM value. Host application
@@ -67,9 +70,11 @@ module MIDI
       $__midi_active_inputs__ << input unless $__midi_active_inputs__.include?(input)
     end
 
-    # Unregister an input
+    # Unregister an input.
+    # mrubyc lacks Array#delete(value); delete_if matches by value and
+    # keeps Input#stop's cleanup path NoMethodError-free.
     def unregister_input(input)
-      $__midi_active_inputs__.delete(input)
+      $__midi_active_inputs__.delete_if { |i| i == input }
     end
 
     # Get current time in milliseconds (internal helper)
