@@ -2,21 +2,6 @@
 module MIDI
   PPQ: Integer
 
-  # MIDI status bytes
-  STATUS_NOTE_OFF: Integer
-  STATUS_NOTE_ON: Integer
-  STATUS_POLY_AFTERTOUCH: Integer
-  STATUS_CONTROL_CHANGE: Integer
-  STATUS_PROGRAM_CHANGE: Integer
-  STATUS_CHANNEL_PRESSURE: Integer
-  STATUS_PITCH_BEND: Integer
-  STATUS_SYSEX_START: Integer
-  STATUS_SYSEX_END: Integer
-  STATUS_TIMING_CLOCK: Integer
-  STATUS_START: Integer
-  STATUS_CONTINUE: Integer
-  STATUS_STOP: Integer
-
   def self.start!: (?bpm: (Integer|Float|^() -> Numeric), ?output: Device?, ?sync: untyped, ?subdivisions: Integer) { (Clock) -> void } -> void
   def self.bpm_loop: (?(Integer|Float) bpm, ?output: Device?, ?subdivisions: Integer, ?send_start: bool, ?sync: bool, ?input: Input?, ?on_loop: untyped, ?on_error: untyped, ?bpm_source: untyped) { (Clock) -> void } -> void
   def self.on_bpm_change: () { (Float) -> void } -> untyped
@@ -26,8 +11,26 @@ module MIDI
   def self.usb_host_device: () -> Device?
   def self.sam2695_device: (Integer tx_pin, ?Integer rx_pin) -> Device?
 
-  module Notes
-    def self.number: (String name, Integer octave) -> Integer
+  module Note
+    C: Integer
+    Cs: Integer
+    Db: Integer
+    D: Integer
+    Ds: Integer
+    Eb: Integer
+    E: Integer
+    F: Integer
+    Fs: Integer
+    Gb: Integer
+    G: Integer
+    Gs: Integer
+    Ab: Integer
+    A: Integer
+    As: Integer
+    Bb: Integer
+    B: Integer
+
+    def self.number: (Integer note, Integer octave) -> Integer
     def self.name: (Integer midi_note) -> String
   end
 
@@ -64,6 +67,8 @@ module MIDI
     def send_start: () -> Integer
     def send_stop: () -> Integer
     def send_continue: () -> Integer
+
+    def send_sysex: (Array[Integer] data, ?wrap: bool) -> void
   end
 
   class Input

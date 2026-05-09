@@ -67,6 +67,10 @@ MIDI.on_bpm_change { |new_bpm| puts "BPM is now #{new_bpm}" }
 - `MIDI.on_bpm_change { |new_bpm| ... }` - Register a hook called when
   the live BPM changes (manual set or external sync).
 - `MIDI.input(device)` / `MIDI.clock(device)` - Convenience builders.
+- `MIDI.usb_host_device` - Returns a `MIDI::Device` wrapping the USB MIDI
+  Host transport, or `nil` if nothing is connected.
+- `MIDI.sam2695_device(tx_pin, rx_pin = -1)` - Returns a `MIDI::Device`
+  wrapping a SAM2695 synth on the given UART pins, or `nil` if not ready.
 - `MIDI.sleep_ms(ms)` - Sleep that yields to MIDI input dispatch so you
   don't drop incoming events.
 - `MIDI.bpm_loop(...)` - Legacy version of `start!`. Kept for now;
@@ -93,6 +97,9 @@ Wraps any transport that implements `send_packet` / `transport_id` /
 - `all_notes_off(channel: 0)` / `all_sound_off(channel: 0)` /
   `reset_all_controllers(channel: 0)`
 - Realtime: `send_clock` / `send_start` / `send_stop` / `send_continue`
+- `send_sysex(data, wrap: false)` - Send a SysEx message. `data` is an
+  array of bytes; with `wrap: true` the leading `0xF0` and trailing `0xF7`
+  are added automatically.
 
 ### `MIDI::Input`
 
@@ -114,10 +121,12 @@ Wraps any transport that implements `send_packet` / `transport_id` /
   clock bytes for sync.
 - `external_bpm` / `sync_to_external`
 
-### `MIDI::Notes`
+### `MIDI::Note`
 
-- `MIDI::Notes.number("C", 4)` -> 60
-- `MIDI::Notes.name(60)` -> `"C4"`
+- `MIDI::Note.number(MIDI::Note::C, 4)` -> 60
+- `MIDI::Note.name(60)` -> `"C4"`
+- Note-name constants: `MIDI::Note::C`, `Cs`/`Db`, `D`, `Ds`/`Eb`, `E`, `F`,
+  `Fs`/`Gb`, `G`, `Gs`/`Ab`, `A`, `As`/`Bb`, `B` (0..11)
 
 ## Architecture
 
