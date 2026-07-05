@@ -17,6 +17,7 @@
 #include "../../include/midi_clock_gen.h"
 #include "../../include/midi_transport.h"
 #include "../../../picoruby-usb_midi_host/include/usb_midi_host.h"
+#include "../../../picoruby-usb_midi_device/include/usb_midi_device.h"
 #include "../../../picoruby-uart_midi/include/uart_midi.h"
 
 /* Application-supplied cooperative-stop hooks. Both default to NULL,
@@ -132,6 +133,49 @@ static const midi_transport_ops_t g_sam_tx_ops = {
 /* Const for the same reason as g_usb_transport. */
 static const midi_transport_t g_sam_transport = {
     .ops = &g_sam_tx_ops,
+    .ctx = NULL,
+};
+
+/* USB-MIDI *device* transport (Tab5 USB-C, ESP32 appears as a MIDI
+ * device to a host PC). On boards without CONFIG_USB_MIDI_BOARD_
+ * M5STACK_TAB5 the USB_MIDI_DEVICE_* functions are link-time stubs
+ * that report disconnected and fail sends, so this is safe everywhere. */
+static int usbdev_tx_send_packet(void *ctx, uint8_t cable, uint8_t cin,
+                                 uint8_t b1, uint8_t b2, uint8_t b3)
+{
+    (void)ctx;
+    return USB_MIDI_DEVICE_send_packet(cable, cin, b1, b2, b3);
+}
+
+static int usbdev_tx_read_bytes(void *ctx, uint8_t *buf, size_t maxlen)
+{
+    (void)ctx;
+    return USB_MIDI_DEVICE_read_packet(buf, maxlen);
+}
+
+static int usbdev_tx_bytes_available(void *ctx)
+{
+    (void)ctx;
+    return USB_MIDI_DEVICE_bytes_available();
+}
+
+static bool usbdev_tx_is_connected(void *ctx)
+{
+    (void)ctx;
+    return USB_MIDI_DEVICE_connected();
+}
+
+static const midi_transport_ops_t g_usbdev_tx_ops = {
+    .send_packet     = usbdev_tx_send_packet,
+    .read_bytes      = usbdev_tx_read_bytes,
+    .bytes_available = usbdev_tx_bytes_available,
+    .is_connected    = usbdev_tx_is_connected,
+    .transport_id    = MIDI_TRANSPORT_ID_USB,
+};
+
+/* Const for the same reason as g_usb_transport. */
+static const midi_transport_t g_usbdev_transport = {
+    .ops = &g_usbdev_tx_ops,
     .ctx = NULL,
 };
 
@@ -729,6 +773,10 @@ static void scheduler_send_packet(uint8_t transport_mask, uint8_t cin,
     if (transport_mask & MIDI_TRANSPORT_SAM2695) {
         g_sam_transport.ops->send_packet(g_sam_transport.ctx, 0,
                                          cin, status, data1, data2);
+    }
+    if (transport_mask & MIDI_TRANSPORT_USB_DEVICE) {
+        g_usbdev_transport.ops->send_packet(g_usbdev_transport.ctx, 0,
+                                            cin, status, data1, data2);
     }
 }
 

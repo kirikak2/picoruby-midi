@@ -283,9 +283,10 @@ module MIDI
     # The bit values intentionally coincide with the Transport interface's
     # MIDI_TRANSPORT_ID_USB (1) and MIDI_TRANSPORT_ID_SERIAL (2) so a
     # transport's id doubles as its mask bit on the trigger/batch path.
-    TRANSPORT_USB     = 0x01
-    TRANSPORT_SAM2695 = 0x02
-    TRANSPORT_ALL     = 0x03
+    TRANSPORT_USB        = 0x01
+    TRANSPORT_SAM2695    = 0x02
+    TRANSPORT_ALL        = 0x03  # legacy fallback: physical outputs only
+    TRANSPORT_USB_DEVICE = 0x04  # ESP32 as USB-MIDI device (Tab5 USB-C)
 
     # Determine transport mask using the transport's declared id, falling
     # back to the legacy class-name match for transports that haven't yet
@@ -295,9 +296,10 @@ module MIDI
         @transport.transport_id
       else
         case @transport.class.to_s
-        when "USB_MIDI"     then TRANSPORT_USB
-        when "SAM2695"      then TRANSPORT_SAM2695
-        else                     TRANSPORT_ALL
+        when "USB_MIDI"        then TRANSPORT_USB
+        when "SAM2695"         then TRANSPORT_SAM2695
+        when "USB_MIDI_DEVICE" then TRANSPORT_USB_DEVICE
+        else                        TRANSPORT_ALL
         end
       end
     end
