@@ -59,6 +59,48 @@ typedef struct midi_transport {
     void *ctx;
 } midi_transport_t;
 
+/*
+ * Transport registry
+ *
+ * Routing by transport_mask (the note scheduler, MIDI_Note_trigger(),
+ * application cleanup) goes through this table instead of naming each
+ * transport, so a new transport gem only has to register itself; the
+ * protocol layer never includes its headers.
+ *
+ * One bit of the uint8_t mask per transport, so at most
+ * MIDI_TRANSPORT_REGISTRY_SIZE transports. The low bits are reserved for
+ * the original built-ins and keep their historical values (0x01 USB host,
+ * 0x02 UART, 0x04 USB device -- see MIDI_TRANSPORT_* in midi.h), so masks
+ * that scripts or the UI hard-coded keep working. Everything else gets a
+ * bit from MIDI_TRANSPORT_FIRST_DYNAMIC_BIT upwards.
+ *
+ * The table is written once at start-up and only read afterwards; entries
+ * are never freed while a scheduled note may still reference their bit.
+ */
+#define MIDI_TRANSPORT_REGISTRY_SIZE      8
+#define MIDI_TRANSPORT_FIRST_DYNAMIC_BIT  0x08
+
+/* Register `t` under a fixed bit (one of the reserved built-in bits).
+ * Returns 0 on success, -1 if `bit` is not a single bit or is taken by a
+ * different transport. Registering the same transport twice is a no-op. */
+int MIDI_transport_register_at(uint8_t bit, const midi_transport_t *t);
+
+/* Register `t` under the next free dynamic bit and return that bit, or 0
+ * when the table is full. Registering the same transport again returns
+ * the bit it already has. */
+uint8_t MIDI_transport_register(const midi_transport_t *t);
+
+/* Remove whatever is registered under `bit`. */
+void MIDI_transport_unregister(uint8_t bit);
+
+/* The transport registered under `bit`, or NULL. */
+const midi_transport_t *MIDI_transport_get(uint8_t bit);
+
+/* Send one USB-MIDI packet to every registered transport whose bit is set
+ * in `mask`. Unregistered bits are ignored. */
+void MIDI_transport_send(uint8_t mask, uint8_t cable, uint8_t cin,
+                         uint8_t b1, uint8_t b2, uint8_t b3);
+
 #ifdef __cplusplus
 }
 #endif

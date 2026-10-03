@@ -162,9 +162,13 @@ void MIDI_Input_reset_external_clock(void);
 
 /* Transport type bitmask.
  * NOTE: Ruby-side transport_id doubles as this mask, so each transport
- * must own a distinct bit. MIDI_TRANSPORT_ALL deliberately covers only
- * the physical outputs (legacy fallback for unknown transports); the
- * USB device transport is always addressed explicitly. */
+ * must own a distinct bit. These three are the built-ins with their
+ * historical values, reserved in the transport registry (see
+ * midi_transport.h); other transport gems take bits from
+ * MIDI_TRANSPORT_FIRST_DYNAMIC_BIT up with MIDI_transport_register().
+ * MIDI_TRANSPORT_ALL deliberately covers only the physical outputs
+ * (legacy fallback for unknown transports); the USB device transport and
+ * registered transports are always addressed explicitly. */
 #define MIDI_TRANSPORT_USB         0x01  /* USB-MIDI host (USB-A) */
 #define MIDI_TRANSPORT_SAM2695     0x02  /* UART / SAM2695 synth */
 #define MIDI_TRANSPORT_ALL         0x03

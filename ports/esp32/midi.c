@@ -179,6 +179,19 @@ static const midi_transport_t g_usbdev_transport = {
     .ctx = NULL,
 };
 
+/* Put the three built-in transports into the registry under their
+ * historical mask bits, before app_main and before any other transport
+ * gem registers itself. Routing by mask (the note scheduler below,
+ * application cleanup) then goes through MIDI_transport_send() and no
+ * longer names a transport. */
+__attribute__((constructor))
+static void register_builtin_transports(void)
+{
+    MIDI_transport_register_at(MIDI_TRANSPORT_USB,        &g_usb_transport);
+    MIDI_transport_register_at(MIDI_TRANSPORT_SAM2695,    &g_sam_transport);
+    MIDI_transport_register_at(MIDI_TRANSPORT_USB_DEVICE, &g_usbdev_transport);
+}
+
 /* Timer handle for the periodic 24 PPQ tick */
 static esp_timer_handle_t g_clock_timer = NULL;
 
@@ -747,8 +760,8 @@ void MIDI_Input_reset_external_clock(void)
 
 /* ========================================
  * Note Scheduler Port - drives the OS-free scheduler core in
- * src/midi_scheduler.c via an esp_timer and routes its send callback to
- * USB_MIDI / SAM2695 transports.
+ * src/midi_scheduler.c via an esp_timer and routes its send callback
+ * through the transport registry.
  * ======================================== */
 
 static const char *SCHED_TAG = "NOTE_SCHED";
@@ -760,24 +773,13 @@ static volatile bool g_scheduler_running = false;
 #define NOTE_SCHEDULER_TICK_US 1000
 
 /* Send callback registered with the scheduler core: routes a single
- * 3-byte channel-voice message via the Transport interface to the USB
- * and/or SAM2695 transports according to transport_mask.
+ * 3-byte channel-voice message to every registered transport selected
+ * by transport_mask.
  */
 static void scheduler_send_packet(uint8_t transport_mask, uint8_t cin,
                                   uint8_t status, uint8_t data1, uint8_t data2)
 {
-    if (transport_mask & MIDI_TRANSPORT_USB) {
-        g_usb_transport.ops->send_packet(g_usb_transport.ctx, 0,
-                                         cin, status, data1, data2);
-    }
-    if (transport_mask & MIDI_TRANSPORT_SAM2695) {
-        g_sam_transport.ops->send_packet(g_sam_transport.ctx, 0,
-                                         cin, status, data1, data2);
-    }
-    if (transport_mask & MIDI_TRANSPORT_USB_DEVICE) {
-        g_usbdev_transport.ops->send_packet(g_usbdev_transport.ctx, 0,
-                                            cin, status, data1, data2);
-    }
+    MIDI_transport_send(transport_mask, 0, cin, status, data1, data2);
 }
 
 static void note_scheduler_callback(void *arg)
