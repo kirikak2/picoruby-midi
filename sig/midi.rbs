@@ -11,6 +11,18 @@ module MIDI
   def self.usb_host_device: () -> Device?
   def self.sam2695_device: (Integer tx_pin, ?Integer rx_pin) -> Device?
 
+  # Routing (MIDI Thru, forwarded in C by the input task)
+  ROUTE_SOURCES: Integer
+  ROUTE_ALL_CHANNELS: Integer
+  def self.route: (untyped from, untyped to, ?channel: Integer?) -> bool
+  def self.unroute: (untyped from, ?untyped to) -> Integer
+  def self.unroute_all: () -> nil
+  def self.route_bit: (untyped obj) -> Integer
+  def self._route_add: (Integer src_bit, Integer dst_mask, Integer channel) -> Integer
+  def self._route_remove: (Integer src_bit, Integer dst_mask) -> Integer
+  def self._route_clear: () -> nil
+  def self._route_start: () -> Integer
+
   module Note
     C: Integer
     Cs: Integer

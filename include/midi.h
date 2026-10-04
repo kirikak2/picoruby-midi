@@ -112,6 +112,16 @@ void MIDI_Input_deinit(void);
 /* Start background processing task */
 int MIDI_Input_start(void);
 
+/* Whether parsed events go to the queues MIDI::Input pops from. The
+ * bindings turn it on in MIDI::Input._start_task and off in _stop_task;
+ * without a reader (routes only) events are not queued. */
+void MIDI_Input_set_queueing(bool on);
+
+/* Start the input task for MIDI.route. Like MIDI_Input_start(), but also
+ * marks the task as wanted when no source is connected yet, so the USB host
+ * driver starts it once a device appears. */
+int MIDI_Input_start_routing(void);
+
 /* Stop background processing task */
 void MIDI_Input_stop(void);
 

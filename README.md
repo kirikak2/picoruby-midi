@@ -37,6 +37,23 @@ loop do
 end
 ```
 
+### Route one transport to another (MIDI Thru)
+
+Forwarding happens in C, in the input task, as each message is read --
+no Ruby in the path, so a keyboard keeps playing a synth whatever the
+script is doing:
+
+```ruby
+MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.sam2695)              # everything
+MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.amy, channel: 0)      # channel 1 only
+MIDI.unroute(MIDIDevices.usb_midi_host)                                 # all routes from it
+MIDI.unroute_all
+```
+
+Sources are the transports the input task reads (USB-MIDI host, UART);
+any transport in the registry can be a destination. A `MIDI::Input` on
+the source still receives every message, routed or not.
+
 ### BPM-synced loop
 
 `MIDI.start!` runs the clock + dispatches MIDI Input events + invokes
@@ -73,6 +90,11 @@ MIDI.on_bpm_change { |new_bpm| puts "BPM is now #{new_bpm}" }
   wrapping a SAM2695 synth on the given UART pins, or `nil` if not ready.
 - `MIDI.sleep_ms(ms)` - Sleep that yields to MIDI input dispatch so you
   don't drop incoming events.
+- `MIDI.route(from, to, channel: nil)` - Forward messages from one transport
+  (or `MIDI::Device`) to another in C. `channel:` 0..15 passes only that
+  channel's voice messages; `nil` passes every channel plus clock / start /
+  stop / SysEx. Returns `false` when the route table (8 entries) is full.
+- `MIDI.unroute(from, to = nil)` / `MIDI.unroute_all` - Remove routes.
 - `MIDI.bpm_loop(...)` - Legacy version of `start!`. Kept for now;
   prefer `start!`.
 
@@ -136,6 +158,9 @@ ports:
 - `src/midi_parser.c` - Byte/packet parser, SysEx accumulator
 - `src/midi_scheduler.c` - Note off scheduler (driven by `tick(now_us)`)
 - `src/midi_clock_gen.c` - Clock generator (driven by `tick(now_us)`)
+- `src/midi_transport_registry.c` - Transport registry: one bit of the
+  transport mask per transport
+- `src/midi_route.c` - Route table for `MIDI.route`
 - `ports/esp32/midi.c` - ESP32 port: esp_timer-driven clock, FreeRTOS
   input task
 

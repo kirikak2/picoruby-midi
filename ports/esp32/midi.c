@@ -16,6 +16,7 @@
 #include "../../include/midi_scheduler.h"
 #include "../../include/midi_clock_gen.h"
 #include "../../include/midi_transport.h"
+#include "../../include/midi_route.h"
 #include "../../../picoruby-usb_midi_host/include/usb_midi_host.h"
 #include "../../../picoruby-usb_midi_device/include/usb_midi_device.h"
 #include "../../../picoruby-uart_midi/include/uart_midi.h"
@@ -328,6 +329,27 @@ static const char *INPUT_TAG = "MIDI_INPUT";
 static QueueHandle_t g_usb_event_queue = NULL;
 static QueueHandle_t g_sam_event_queue = NULL;
 
+/* The input task feeds two consumers: the event queues that MIDI::Input
+ * pops from Ruby, and the routes (MIDI.route) it forwards to in C. It runs
+ * while either wants it. Events are only queued while a MIDI::Input is
+ * reading (set by the bindings); with routes alone nobody would drain the
+ * queues. */
+static volatile bool g_queue_events = false;
+
+/* Above the PicoRuby VM task (3) on the same core, so routed MIDI is not
+ * held up while a script computes. The task sleeps at least one tick every
+ * pass (see MIDI_INPUT_POLL_MS), so this costs the VM next to nothing. */
+#ifndef MIDI_INPUT_TASK_PRIORITY
+#define MIDI_INPUT_TASK_PRIORITY 4
+#endif
+
+/* Pause between passes over the input sources. Rounded up to one tick (10 ms
+ * at the usual 100 Hz), which is then also the worst-case extra latency of a
+ * routed message. */
+#ifndef MIDI_INPUT_POLL_MS
+#define MIDI_INPUT_POLL_MS 5
+#endif
+
 /* Task handle */
 static TaskHandle_t g_input_task = NULL;
 static volatile bool g_input_running = false;
@@ -339,7 +361,56 @@ static volatile bool g_input_was_started = false;  /* Track if input was ever st
 static midi_parser_t *g_usb_parser = NULL;
 static midi_parser_t *g_sam_parser = NULL;
 
-/* Background task that reads from USB-MIDI and SAM2695 and queues events */
+/* A parsed event back as a USB-MIDI packet, for routing what arrived as
+ * raw UART bytes. Returns false for what is not forwarded (SysEx). */
+static bool event_to_packet(const midi_event_t *e, uint8_t *cin,
+                            uint8_t *b1, uint8_t *b2, uint8_t *b3)
+{
+    uint8_t ch = e->channel & 0x0F;
+    *b2 = 0;
+    *b3 = 0;
+    switch (e->type) {
+    case MIDI_EVENT_NOTE_ON:         *cin = 0x9; *b1 = 0x90 | ch; *b2 = e->data1; *b3 = e->data2; return true;
+    case MIDI_EVENT_NOTE_OFF:        *cin = 0x8; *b1 = 0x80 | ch; *b2 = e->data1; *b3 = e->data2; return true;
+    case MIDI_EVENT_POLY_AFTERTOUCH: *cin = 0xA; *b1 = 0xA0 | ch; *b2 = e->data1; *b3 = e->data2; return true;
+    case MIDI_EVENT_CONTROL_CHANGE:  *cin = 0xB; *b1 = 0xB0 | ch; *b2 = e->data1; *b3 = e->data2; return true;
+    case MIDI_EVENT_PROGRAM_CHANGE:  *cin = 0xC; *b1 = 0xC0 | ch; *b2 = e->data1; return true;
+    case MIDI_EVENT_CHANNEL_PRESSURE:*cin = 0xD; *b1 = 0xD0 | ch; *b2 = e->data1; return true;
+    case MIDI_EVENT_PITCH_BEND: {
+        int v = e->value + 8192;
+        if (v < 0) v = 0;
+        if (v > 16383) v = 16383;
+        *cin = 0xE; *b1 = 0xE0 | ch; *b2 = v & 0x7F; *b3 = (v >> 7) & 0x7F;
+        return true;
+    }
+    case MIDI_EVENT_CLOCK:          *cin = 0xF; *b1 = 0xF8; return true;
+    case MIDI_EVENT_START:          *cin = 0xF; *b1 = 0xFA; return true;
+    case MIDI_EVENT_CONTINUE:       *cin = 0xF; *b1 = 0xFB; return true;
+    case MIDI_EVENT_STOP:           *cin = 0xF; *b1 = 0xFC; return true;
+    case MIDI_EVENT_ACTIVE_SENSING: *cin = 0xF; *b1 = 0xFE; return true;
+    case MIDI_EVENT_SYSTEM_RESET:   *cin = 0xF; *b1 = 0xFF; return true;
+    default:                        return false;
+    }
+}
+
+/* Hand a parsed event to MIDI::Input's queue, if one is reading, else
+ * free it. */
+static void queue_event(QueueHandle_t q, midi_event_t *event, const char *name)
+{
+    if (g_queue_events && xQueueSend(q, event, 0) == pdTRUE) {
+        return;
+    }
+    if (g_queue_events) {
+        ESP_LOGW(INPUT_TAG, "%s event queue full, dropping event", name);
+    }
+    if (event->sysex_data) {
+        free(event->sysex_data);
+        event->sysex_data = NULL;
+    }
+}
+
+/* Background task that reads from USB-MIDI and SAM2695, forwards along the
+ * routes and queues events */
 static void midi_input_task(void *arg)
 {
     /* Large buffer to drain RX buffer completely each iteration */
@@ -388,18 +459,15 @@ static void midi_input_task(void *arg)
                     ESP_LOGD(INPUT_TAG, "USB Packet[%d]: cin=0x%02X m1=0x%02X m2=0x%02X m3=0x%02X",
                              i/4, cin, midi1, midi2, midi3);
 
+                    /* Routes first, and as the packet arrived (SysEx
+                     * included): the lowest-latency path. */
+                    MIDI_route_packet(MIDI_TRANSPORT_USB, cin, midi1, midi2, midi3);
+
                     if (midi_parser_feed_usb(g_usb_parser, cin, midi1, midi2, midi3,
                                              (uint64_t)esp_timer_get_time(), &event)) {
                         ESP_LOGD(INPUT_TAG, "USB event type=%d ch=%d d1=%d d2=%d",
                                  event.type, event.channel, event.data1, event.data2);
-                        /* Send to USB queue */
-                        if (xQueueSend(g_usb_event_queue, &event, 0) != pdTRUE) {
-                            ESP_LOGW(INPUT_TAG, "USB event queue full, dropping event");
-                            if (event.sysex_data) {
-                                free(event.sysex_data);
-                                event.sysex_data = NULL;
-                            }
-                        }
+                        queue_event(g_usb_event_queue, &event, "USB");
                     }
                 }
 
@@ -425,22 +493,24 @@ static void midi_input_task(void *arg)
                                                  (uint64_t)esp_timer_get_time(), &event)) {
                             ESP_LOGD(INPUT_TAG, "SAM2695 event type=%d ch=%d d1=%d d2=%d",
                                      event.type, event.channel, event.data1, event.data2);
-                            /* Send to SAM2695 queue */
-                            if (xQueueSend(g_sam_event_queue, &event, 0) != pdTRUE) {
-                                ESP_LOGW(INPUT_TAG, "SAM event queue full, dropping event");
-                                if (event.sysex_data) {
-                                    free(event.sysex_data);
-                                    event.sysex_data = NULL;
-                                }
+                            uint8_t rcin, rb1, rb2, rb3;
+                            if (event_to_packet(&event, &rcin, &rb1, &rb2, &rb3)) {
+                                MIDI_route_packet(MIDI_TRANSPORT_SAM2695, rcin, rb1, rb2, rb3);
                             }
+                            queue_event(g_sam_event_queue, &event, "SAM");
                         }
                     }
                 }
             }
         }
 
-        /* Short delay to yield CPU */
-        vTaskDelay(pdMS_TO_TICKS(5));
+        /* Yield the CPU until the next pass. At least one tick: with the
+         * usual 100 Hz tick, pdMS_TO_TICKS(5) is 0, and vTaskDelay(0) does
+         * not block -- the task then spins. That went unnoticed while it ran
+         * at priority 1, but above the Ruby VM it starved the VM (no
+         * UI.process, no scripts) for as long as a USB device was plugged in. */
+        TickType_t wait = pdMS_TO_TICKS(MIDI_INPUT_POLL_MS);
+        vTaskDelay(wait > 0 ? wait : 1);
     }
 
     /* Mark as not running before cleanup */
@@ -572,7 +642,7 @@ int MIDI_Input_start(void)
         "midi_input",
         4096,  /* Increased stack size */
         NULL,
-        1,  /* Priority - same level as app_main */
+        MIDI_INPUT_TASK_PRIORITY,
         &g_input_task,
         1   /* Core 1, same as PicoRuby (consumer of events) */
     );
@@ -613,9 +683,30 @@ static void drain_event_queue(QueueHandle_t q)
 /*
  * Stop background processing task
  */
+void MIDI_Input_set_queueing(bool on)
+{
+    g_queue_events = on;
+}
+
+int MIDI_Input_start_routing(void)
+{
+    /* Mark the task as wanted even if no source is connected yet: the
+     * USB host driver restarts it on (re)connect when this is set. */
+    g_input_was_started = true;
+    return MIDI_Input_start();
+}
+
 void MIDI_Input_stop(void)
 {
     if (!g_input_running) {
+        return;
+    }
+
+    /* Routes still need the task: only empty the queues MIDI::Input no
+     * longer reads. */
+    if (MIDI_route_active()) {
+        drain_event_queue(g_usb_event_queue);
+        drain_event_queue(g_sam_event_queue);
         return;
     }
 

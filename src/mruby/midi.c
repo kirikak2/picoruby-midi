@@ -19,6 +19,7 @@
 #include <mruby/string.h>
 
 #include "../../include/midi.h"
+#include "../../include/midi_route.h"
 
 /* ========================================================================
  * MIDI::Clock
@@ -70,6 +71,7 @@ mrb_midi_clock_timer_running(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_midi_input_start_task(mrb_state *mrb, mrb_value self)
 {
+    MIDI_Input_set_queueing(true);
     int ret = MIDI_Input_start();
     return mrb_fixnum_value(ret);
 }
@@ -77,8 +79,42 @@ mrb_midi_input_start_task(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_midi_input_stop_task(mrb_state *mrb, mrb_value self)
 {
+    MIDI_Input_set_queueing(false);
     MIDI_Input_stop();
     return mrb_nil_value();
+}
+
+/* MIDI._route_add(src_bit, dst_mask, channel) -> 0 / -1 */
+static mrb_value
+mrb_midi_route_add(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src, dst, channel;
+    mrb_get_args(mrb, "iii", &src, &dst, &channel);
+    return mrb_fixnum_value(MIDI_route_add((uint8_t)src, (uint8_t)dst, (int)channel));
+}
+
+/* MIDI._route_remove(src_bit, dst_mask) -> number of routes dropped */
+static mrb_value
+mrb_midi_route_remove(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src, dst;
+    mrb_get_args(mrb, "ii", &src, &dst);
+    return mrb_fixnum_value(MIDI_route_remove((uint8_t)src, (uint8_t)dst));
+}
+
+/* MIDI._route_clear */
+static mrb_value
+mrb_midi_route_clear(mrb_state *mrb, mrb_value self)
+{
+    MIDI_route_clear();
+    return mrb_nil_value();
+}
+
+/* MIDI._route_start -> 0 / -1 */
+static mrb_value
+mrb_midi_route_start(mrb_state *mrb, mrb_value self)
+{
+    return mrb_fixnum_value(MIDI_Input_start_routing());
 }
 
 static mrb_value
@@ -387,6 +423,16 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
                                   mrb_midi_scheduler_clear, MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_send_batch),
                                   mrb_midi_send_batch, MRB_ARGS_REQ(1));
+
+    /* Routing (MIDI.route) */
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_add),
+                                  mrb_midi_route_add, MRB_ARGS_REQ(3));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_remove),
+                                  mrb_midi_route_remove, MRB_ARGS_REQ(2));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_clear),
+                                  mrb_midi_route_clear, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_start),
+                                  mrb_midi_route_start, MRB_ARGS_NONE());
 
     /* MIDI::Clock */
     class_Clock = mrb_define_class_under_id(mrb, module_MIDI, MRB_SYM(Clock),

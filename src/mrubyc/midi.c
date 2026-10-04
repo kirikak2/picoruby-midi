@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "../../include/midi.h"
+#include "../../include/midi_route.h"
 
 /*
  * MIDI::Clock._init_timer
@@ -70,6 +71,7 @@ c_midi_clock_timer_running(mrbc_vm *vm, mrbc_value v[], int argc)
 static void
 c_midi_input_start_task(mrbc_vm *vm, mrbc_value v[], int argc)
 {
+    MIDI_Input_set_queueing(true);
     int ret = MIDI_Input_start();
     SET_INT_RETURN(ret);
 }
@@ -80,6 +82,7 @@ c_midi_input_start_task(mrbc_vm *vm, mrbc_value v[], int argc)
 static void
 c_midi_input_stop_task(mrbc_vm *vm, mrbc_value v[], int argc)
 {
+    MIDI_Input_set_queueing(false);
     MIDI_Input_stop();
     SET_NIL_RETURN();
 }
@@ -489,6 +492,53 @@ c_midi_input_pop_event_sam(mrbc_vm *vm, mrbc_value v[], int argc)
 }
 
 /*
+ * MIDI._route_add(src_bit, dst_mask, channel) -> 0 / -1
+ * channel: 0..15, or -1 for every channel plus system messages.
+ */
+static void
+c_midi_route_add(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc < 3) {
+        SET_INT_RETURN(-1);
+        return;
+    }
+    SET_INT_RETURN(MIDI_route_add((uint8_t)GET_INT_ARG(1), (uint8_t)GET_INT_ARG(2),
+                                  (int)GET_INT_ARG(3)));
+}
+
+/*
+ * MIDI._route_remove(src_bit, dst_mask) -> number of routes dropped
+ */
+static void
+c_midi_route_remove(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc < 2) {
+        SET_INT_RETURN(0);
+        return;
+    }
+    SET_INT_RETURN(MIDI_route_remove((uint8_t)GET_INT_ARG(1), (uint8_t)GET_INT_ARG(2)));
+}
+
+/*
+ * MIDI._route_clear
+ */
+static void
+c_midi_route_clear(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    MIDI_route_clear();
+    SET_NIL_RETURN();
+}
+
+/*
+ * MIDI._route_start -> 0 / -1 (input task for routing; -1 = no source yet)
+ */
+static void
+c_midi_route_start(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN(MIDI_Input_start_routing());
+}
+
+/*
  * Gem initialization
  */
 void
@@ -501,6 +551,12 @@ mrbc_midi_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_MIDI, "_trigger", c_midi_trigger);
     mrbc_define_method(vm, module_MIDI, "_scheduler_clear", c_midi_scheduler_clear);
     mrbc_define_method(vm, module_MIDI, "_send_batch", c_midi_send_batch);
+
+    /* Routing (MIDI.route) */
+    mrbc_define_method(vm, module_MIDI, "_route_add", c_midi_route_add);
+    mrbc_define_method(vm, module_MIDI, "_route_remove", c_midi_route_remove);
+    mrbc_define_method(vm, module_MIDI, "_route_clear", c_midi_route_clear);
+    mrbc_define_method(vm, module_MIDI, "_route_start", c_midi_route_start);
 
     /* Define Clock class under MIDI */
     mrbc_class *class_Clock = mrbc_define_class_under(vm, module_MIDI, "Clock", mrbc_class_object);
