@@ -445,7 +445,7 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
                          mrb_midi_clock_stop_timer, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, class_Clock, MRB_SYM(_update_timer_period),
                          mrb_midi_clock_update_period, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, class_Clock, MRB_SYM(_timer_running?),
+    mrb_define_method_id(mrb, class_Clock, MRB_SYM_Q(_timer_running),
                          mrb_midi_clock_timer_running, MRB_ARGS_NONE());
 
     /* MIDI::Input */
@@ -455,7 +455,7 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
                          mrb_midi_input_start_task, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, class_Input, MRB_SYM(_stop_task),
                          mrb_midi_input_stop_task, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, class_Input, MRB_SYM(_task_running?),
+    mrb_define_method_id(mrb, class_Input, MRB_SYM_Q(_task_running),
                          mrb_midi_input_task_running, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, class_Input, MRB_SYM(_events_available),
                          mrb_midi_input_events_available, MRB_ARGS_NONE());
@@ -486,7 +486,10 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
 void
 mrb_picoruby_midi_gem_final(mrb_state *mrb)
 {
-    MIDI_Input_deinit();
-    MIDI_Note_scheduler_deinit();
-    MIDI_Clock_deinit();
+    /* Nothing to tear down. The input task, note scheduler and clock timer
+     * are process-wide C state that outlives any one VM: the host stops them
+     * when a script ends (see picoruby-esp32's MIDI cleanup), and a VM that
+     * is abandoned rather than closed never reaches this function anyway.
+     * C-side users such as the Tombola sequencer keep calling
+     * MIDI_Note_trigger() between scripts, so the scheduler must survive. */
 }
