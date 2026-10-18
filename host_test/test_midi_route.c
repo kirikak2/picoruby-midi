@@ -116,6 +116,20 @@ int main(void)
     EXPECT_EQ(MIDI_route_add(0x01, 0x04, 0), 0);      /* merging still works */
     MIDI_route_clear();
 
+    printf("route: pushed sources\n");
+    EXPECT_EQ(MIDI_route_sources(), MIDI_ROUTE_INPUT_SOURCES);
+    MIDI_route_set_source(0x10, true);
+    MIDI_route_set_source(0x18, true);                /* not one bit: ignored */
+    EXPECT_EQ(MIDI_route_sources(), 0x13);
+    EXPECT_EQ(MIDI_route_add(0x10, 0x08, MIDI_ROUTE_ALL_CHANNELS), 0);
+    EXPECT_EQ(MIDI_route_add(0x10, 0x02, 9), 0);
+    EXPECT_EQ(MIDI_route_targets(0x10, 0x9, 0x90), 0x08);
+    EXPECT_EQ(MIDI_route_targets(0x10, 0x9, 0x99), 0x0A);
+    EXPECT_EQ(MIDI_route_targets(0x01, 0x9, 0x99), 0);
+    MIDI_route_set_source(0x10, false);
+    EXPECT_EQ(MIDI_route_sources(), MIDI_ROUTE_INPUT_SOURCES);
+    MIDI_route_clear();
+
     printf("all route tests passed\n");
     return 0;
 }

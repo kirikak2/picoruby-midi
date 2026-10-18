@@ -50,9 +50,12 @@ MIDI.unroute(MIDIDevices.usb_midi_host)                                 # all ro
 MIDI.unroute_all
 ```
 
-Sources are the transports the input task reads (USB-MIDI host, UART);
-any transport in the registry can be a destination. A `MIDI::Input` on
-the source still receives every message, routed or not.
+Sources are the transports the input task reads (USB-MIDI host, UART),
+plus transports that produce MIDI themselves and declare it with
+`MIDI_route_set_source()` -- they look up their destinations with
+`MIDI_route_targets()` and send on their own (an on-screen keyboard, for
+example). Any transport in the registry can be a destination. A
+`MIDI::Input` on the source still receives every message, routed or not.
 
 ### BPM-synced loop
 

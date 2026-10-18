@@ -22,6 +22,7 @@ module MIDI
   def self._route_remove: (Integer src_bit, Integer dst_mask) -> Integer
   def self._route_clear: () -> nil
   def self._route_start: () -> Integer
+  def self._route_sources: () -> Integer
 
   module Note
     C: Integer

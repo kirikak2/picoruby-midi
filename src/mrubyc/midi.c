@@ -539,6 +539,15 @@ c_midi_route_start(mrbc_vm *vm, mrbc_value v[], int argc)
 }
 
 /*
+ * MIDI._route_sources -> mask of the transports a route may start from
+ */
+static void
+c_midi_route_sources(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN(MIDI_route_sources());
+}
+
+/*
  * Gem initialization
  */
 void
@@ -557,6 +566,7 @@ mrbc_midi_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_MIDI, "_route_remove", c_midi_route_remove);
     mrbc_define_method(vm, module_MIDI, "_route_clear", c_midi_route_clear);
     mrbc_define_method(vm, module_MIDI, "_route_start", c_midi_route_start);
+    mrbc_define_method(vm, module_MIDI, "_route_sources", c_midi_route_sources);
 
     /* Define Clock class under MIDI */
     mrbc_class *class_Clock = mrbc_define_class_under(vm, module_MIDI, "Clock", mrbc_class_object);

@@ -117,6 +117,13 @@ mrb_midi_route_start(mrb_state *mrb, mrb_value self)
     return mrb_fixnum_value(MIDI_Input_start_routing());
 }
 
+/* MIDI._route_sources -> mask of the transports a route may start from */
+static mrb_value
+mrb_midi_route_sources(mrb_state *mrb, mrb_value self)
+{
+    return mrb_fixnum_value(MIDI_route_sources());
+}
+
 static mrb_value
 mrb_midi_input_task_running(mrb_state *mrb, mrb_value self)
 {
@@ -433,6 +440,8 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
                                   mrb_midi_route_clear, MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_start),
                                   mrb_midi_route_start, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_sources),
+                                  mrb_midi_route_sources, MRB_ARGS_NONE());
 
     /* MIDI::Clock */
     class_Clock = mrb_define_class_under_id(mrb, module_MIDI, MRB_SYM(Clock),

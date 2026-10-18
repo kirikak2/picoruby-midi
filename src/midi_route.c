@@ -15,6 +15,7 @@ typedef struct {
 } midi_route_t;
 
 static midi_route_t g_routes[MIDI_ROUTE_MAX];
+static volatile uint8_t g_extra_sources;
 
 static bool single_bit(uint8_t b)
 {
@@ -91,8 +92,7 @@ static int packet_channel(uint8_t cin, uint8_t b1)
     }
 }
 
-void MIDI_route_packet(uint8_t src_bit, uint8_t cin,
-                       uint8_t b1, uint8_t b2, uint8_t b3)
+uint8_t MIDI_route_targets(uint8_t src_bit, uint8_t cin, uint8_t b1)
 {
     int ch = packet_channel(cin, b1);
     uint8_t dst = 0;
@@ -103,6 +103,28 @@ void MIDI_route_packet(uint8_t src_bit, uint8_t cin,
             dst |= g_routes[i].dst;
         }
     }
+    return dst;
+}
+
+void MIDI_route_set_source(uint8_t bit, bool on)
+{
+    if (!single_bit(bit)) return;
+    if (on) {
+        g_extra_sources |= bit;
+    } else {
+        g_extra_sources &= (uint8_t)~bit;
+    }
+}
+
+uint8_t MIDI_route_sources(void)
+{
+    return (uint8_t)(MIDI_ROUTE_INPUT_SOURCES | g_extra_sources);
+}
+
+void MIDI_route_packet(uint8_t src_bit, uint8_t cin,
+                       uint8_t b1, uint8_t b2, uint8_t b3)
+{
+    uint8_t dst = MIDI_route_targets(src_bit, cin, b1);
     /* One send per destination even when several routes name it. */
     if (dst != 0) {
         MIDI_transport_send(dst, 0, cin & 0x0F, b1, b2, b3);

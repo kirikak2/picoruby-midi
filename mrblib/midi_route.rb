@@ -11,12 +11,15 @@
 #   MIDI.unroute(MIDIDevices.usb_midi_host, MIDIDevices.amy)
 #   MIDI.unroute_all
 #
-# Sources are the transports the input task reads: the USB-MIDI host and the
-# UART (SAM2695 / UART_MIDI). Any registered transport can be a destination.
+# Sources are the transports the input task reads -- the USB-MIDI host and
+# the UART (SAM2695 / UART_MIDI) -- plus transports that declare themselves a
+# source and forward their own output in C (e.g. picoruby-ui's UI::Keys, an
+# on-screen keyboard). Any registered transport can be a destination.
 # A MIDI::Input on the same source keeps working alongside: it receives the
 # same messages, routed or not.
 module MIDI
-  # Transports MIDI.route can read from (USB host 0x01, UART 0x02)
+  # Transports the input task reads from (USB host 0x01, UART 0x02). A route
+  # may also start from any transport in MIDI._route_sources.
   ROUTE_SOURCES = 0x03
 
   # channel: value meaning "every channel, plus clock / start / stop / SysEx"
@@ -33,8 +36,9 @@ module MIDI
     def route(from, to, channel: nil)
       src = route_bit(from)
       dst = route_bit(to)
-      if src == 0 || (src & ROUTE_SOURCES) == 0
-        raise ArgumentError, "MIDI.route: source must be the USB-MIDI host or a UART transport"
+      if src == 0 || (src & _route_sources) == 0
+        raise ArgumentError, "MIDI.route: source must be the USB-MIDI host, a UART transport, " \
+                             "or a transport that forwards its own output (e.g. UI::Keys)"
       end
       raise ArgumentError, "MIDI.route: destination is not a registered transport" if dst == 0
       raise ArgumentError, "MIDI.route: source and destination are the same" if src == dst
@@ -43,6 +47,8 @@ module MIDI
       end
 
       return false if _route_add(src, dst, channel.nil? ? ROUTE_ALL_CHANNELS : channel) != 0
+      # The other sources push their packets themselves: no input task
+      return true if (src & ROUTE_SOURCES) == 0
 
       # A UART transport reads only once its own input is started.
       transport = from.respond_to?(:transport) ? from.transport : from
