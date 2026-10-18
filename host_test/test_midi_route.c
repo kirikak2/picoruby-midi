@@ -105,6 +105,8 @@ int main(void)
     EXPECT_EQ(g_hits[3], 0); EXPECT_EQ(g_hits[2], 1);
     EXPECT_EQ(MIDI_route_remove(0x01, 0xFF), 1);
     EXPECT_EQ(MIDI_route_active(), 1);                /* the UART route is left */
+    EXPECT_EQ(MIDI_route_from(0x01), 0);
+    EXPECT_EQ(MIDI_route_from(0x02), 1);
     MIDI_route_clear();
     EXPECT_EQ(MIDI_route_active(), 0);
 
@@ -120,7 +122,7 @@ int main(void)
     EXPECT_EQ(MIDI_route_sources(), MIDI_ROUTE_INPUT_SOURCES);
     MIDI_route_set_source(0x10, true);
     MIDI_route_set_source(0x18, true);                /* not one bit: ignored */
-    EXPECT_EQ(MIDI_route_sources(), 0x13);
+    EXPECT_EQ(MIDI_route_sources(), 0x17);
     EXPECT_EQ(MIDI_route_add(0x10, 0x08, MIDI_ROUTE_ALL_CHANNELS), 0);
     EXPECT_EQ(MIDI_route_add(0x10, 0x02, 9), 0);
     EXPECT_EQ(MIDI_route_targets(0x10, 0x9, 0x90), 0x08);

@@ -409,6 +409,15 @@ static void queue_event(QueueHandle_t q, midi_event_t *event, const char *name)
     }
 }
 
+/* The USB-MIDI device (what the PC sends) is read only for routing, and only
+ * while a route starts from it: otherwise its packets stay in the device's
+ * ring buffer for USB_MIDI_DEVICE#read_available. Not tied to enumeration,
+ * so a route set before the PC opens the port works once it does. */
+static inline bool usbdev_input_wanted(void)
+{
+    return MIDI_route_from(MIDI_TRANSPORT_USB_DEVICE);
+}
+
 /* Background task that reads from USB-MIDI and SAM2695, forwards along the
  * routes and queues events */
 static void midi_input_task(void *arg)
@@ -418,6 +427,7 @@ static void midi_input_task(void *arg)
     midi_event_t event;
     bool usb_midi_available = false;
     bool sam2695_available = false;
+    bool usbdev_available = false;
 
     ESP_LOGI(INPUT_TAG, "Input task started");
 
@@ -431,9 +441,10 @@ static void midi_input_task(void *arg)
         /* Check available input sources via the Transport interface */
         usb_midi_available = g_usb_transport.ops->is_connected(g_usb_transport.ctx);
         sam2695_available  = g_sam_transport.ops->is_connected(g_sam_transport.ctx);
+        usbdev_available   = usbdev_input_wanted();
 
         /* Exit if no input sources available */
-        if (!usb_midi_available && !sam2695_available) {
+        if (!usb_midi_available && !sam2695_available && !usbdev_available) {
             ESP_LOGI(INPUT_TAG, "No input sources available, exiting input task");
             break;
         }
@@ -500,6 +511,19 @@ static void midi_input_task(void *arg)
                             queue_event(g_sam_event_queue, &event, "SAM");
                         }
                     }
+                }
+            }
+        }
+
+        /* Process USB-MIDI device input (routes only; see usbdev_input_wanted) */
+        if (usbdev_available) {
+            while (g_usbdev_transport.ops->bytes_available(g_usbdev_transport.ctx) >= 4) {
+                int read_len = g_usbdev_transport.ops->read_bytes(g_usbdev_transport.ctx,
+                                                                  buffer, sizeof(buffer));
+                if (read_len <= 0) break;
+                for (int i = 0; i + 3 < read_len; i += 4) {
+                    MIDI_route_packet(MIDI_TRANSPORT_USB_DEVICE, buffer[i] & 0x0F,
+                                      buffer[i + 1], buffer[i + 2], buffer[i + 3]);
                 }
             }
         }
@@ -622,12 +646,14 @@ int MIDI_Input_start(void)
     /* Check if at least one input source is available via the Transport interface */
     bool usb_midi_available = g_usb_transport.ops->is_connected(g_usb_transport.ctx);
     bool sam2695_available  = g_sam_transport.ops->is_connected(g_sam_transport.ctx);
+    bool usbdev_available   = usbdev_input_wanted();
 
-    ESP_LOGI(INPUT_TAG, "Starting input task - USB MIDI: %s, SAM2695: %s",
+    ESP_LOGI(INPUT_TAG, "Starting input task - USB MIDI: %s, SAM2695: %s, USB device: %s",
              usb_midi_available ? "available" : "not available",
-             sam2695_available ? "available" : "not available");
+             sam2695_available ? "available" : "not available",
+             usbdev_available ? "routed" : "not routed");
 
-    if (!usb_midi_available && !sam2695_available) {
+    if (!usb_midi_available && !sam2695_available && !usbdev_available) {
         ESP_LOGW(INPUT_TAG, "Cannot start input task: no input sources available");
         return -1;
     }

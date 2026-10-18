@@ -79,6 +79,14 @@ bool MIDI_route_active(void)
     return false;
 }
 
+bool MIDI_route_from(uint8_t src_bit)
+{
+    for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
+        if (g_routes[i].src == src_bit) return true;
+    }
+    return false;
+}
+
 /* The channel a packet belongs to, or -1 for system messages (and SysEx,
  * whose continuation packets carry no status byte). */
 static int packet_channel(uint8_t cin, uint8_t b1)

@@ -10,7 +10,8 @@
  * midi_transport.h). Packets are USB-MIDI packets (CIN + 3 bytes), and
  * forwarding goes through MIDI_transport_send().
  *
- * Sources are the transports the input task reads (USB host, UART) plus
+ * Sources are the transports the input task reads (USB host, UART, USB
+ * device -- the last only while a route starts from it) plus
  * any transport that declares itself one with MIDI_route_set_source() and
  * pushes its own packets through MIDI_route_targets() -- e.g. an on-screen
  * keyboard, which produces MIDI on the UI task rather than receiving it.
@@ -59,8 +60,12 @@ bool MIDI_route_active(void);
  * into one MIDI_transport_send() with destinations of its own. */
 uint8_t MIDI_route_targets(uint8_t src_bit, uint8_t cin, uint8_t b1);
 
-/* Built-in route sources: the transports the input task reads. */
-#define MIDI_ROUTE_INPUT_SOURCES 0x03
+/* Whether any route starts from `src_bit`. */
+bool MIDI_route_from(uint8_t src_bit);
+
+/* Built-in route sources: the transports the input task reads (USB host
+ * 0x01, UART 0x02, USB device 0x04). */
+#define MIDI_ROUTE_INPUT_SOURCES 0x07
 
 /* Declare (on) or retract (off) `bit` as a route source besides the
  * built-in ones. Such a source forwards its own packets (see

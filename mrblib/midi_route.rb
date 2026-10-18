@@ -11,16 +11,22 @@
 #   MIDI.unroute(MIDIDevices.usb_midi_host, MIDIDevices.amy)
 #   MIDI.unroute_all
 #
-# Sources are the transports the input task reads -- the USB-MIDI host and
-# the UART (SAM2695 / UART_MIDI) -- plus transports that declare themselves a
+# Sources are the transports the input task reads -- the USB-MIDI host, the
+# UART (SAM2695 / UART_MIDI) and the USB-MIDI device (what the PC sends) --
+# plus transports that declare themselves a
 # source and forward their own output in C (e.g. picoruby-ui's UI::Keys, an
 # on-screen keyboard). Any registered transport can be a destination.
 # A MIDI::Input on the same source keeps working alongside: it receives the
 # same messages, routed or not.
 module MIDI
-  # Transports the input task reads from (USB host 0x01, UART 0x02). A route
-  # may also start from any transport in MIDI._route_sources.
-  ROUTE_SOURCES = 0x03
+  # Transports the input task reads from (USB host 0x01, UART 0x02, USB
+  # device 0x04). A route may also start from any transport in
+  # MIDI._route_sources.
+  #
+  # The USB device is read by the input task only while a route starts from
+  # it; it then takes every packet the PC sends, so do not also poll
+  # USB_MIDI_DEVICE#read_available meanwhile.
+  ROUTE_SOURCES = 0x07
 
   # channel: value meaning "every channel, plus clock / start / stop / SysEx"
   ROUTE_ALL_CHANNELS = -1
@@ -37,7 +43,7 @@ module MIDI
       src = route_bit(from)
       dst = route_bit(to)
       if src == 0 || (src & _route_sources) == 0
-        raise ArgumentError, "MIDI.route: source must be the USB-MIDI host, a UART transport, " \
+        raise ArgumentError, "MIDI.route: source must be the USB-MIDI host / device, a UART transport, " \
                              "or a transport that forwards its own output (e.g. UI::Keys)"
       end
       raise ArgumentError, "MIDI.route: destination is not a registered transport" if dst == 0
