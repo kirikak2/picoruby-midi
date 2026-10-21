@@ -20,6 +20,7 @@
 
 #include "../../include/midi.h"
 #include "../../include/midi_route.h"
+#include "../../include/midi_transport.h"
 
 /* ========================================================================
  * MIDI::Clock
@@ -122,6 +123,158 @@ static mrb_value
 mrb_midi_route_sources(mrb_state *mrb, mrb_value self)
 {
     return mrb_fixnum_value(MIDI_route_sources());
+}
+
+/* MIDI._route_targets_of(src_bit) -> transports any route from src_bit forwards to */
+static mrb_value
+mrb_midi_route_targets_of(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src;
+    mrb_get_args(mrb, "i", &src);
+    uint8_t s, d, all = 0;
+    for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
+        if (MIDI_route_get(i, &s, &d, NULL) && s == (uint8_t)src) all |= d;
+    }
+    return mrb_fixnum_value(all);
+}
+
+/* MIDI._route_get(i) -> [src_bit, dst_mask, channel] or nil */
+static mrb_value
+mrb_midi_route_get(mrb_state *mrb, mrb_value self)
+{
+    mrb_int i;
+    mrb_get_args(mrb, "i", &i);
+    uint8_t src, dst;
+    int ch;
+    if (!MIDI_route_get((int)i, &src, &dst, &ch)) return mrb_nil_value();
+    mrb_value a = mrb_ary_new_capa(mrb, 3);
+    mrb_ary_push(mrb, a, mrb_fixnum_value(src));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(dst));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(ch));
+    return a;
+}
+
+/* MIDI._route_filtered(src_bit) -> destinations with a filter (0x100 = Ruby) */
+static mrb_value
+mrb_midi_route_filtered(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src;
+    mrb_get_args(mrb, "i", &src);
+    return mrb_fixnum_value(MIDI_route_filtered((uint8_t)src));
+}
+
+/* MIDI._transport_connected?(bit) -> whether that registered transport is up */
+static mrb_value
+mrb_midi_transport_connected(mrb_state *mrb, mrb_value self)
+{
+    mrb_int bit;
+    mrb_get_args(mrb, "i", &bit);
+    const midi_transport_t *t = MIDI_transport_get((uint8_t)bit);
+    return mrb_bool_value(t && t->ops && t->ops->is_connected && t->ops->is_connected(t->ctx));
+}
+
+/* MIDI._transport_send(mask, cin, b1, b2, b3) */
+static mrb_value
+mrb_midi_transport_send(mrb_state *mrb, mrb_value self)
+{
+    mrb_int mask, cin, b1, b2, b3;
+    mrb_get_args(mrb, "iiiii", &mask, &cin, &b1, &b2, &b3);
+    MIDI_transport_send((uint8_t)mask, 0, (uint8_t)(cin & 0x0F),
+                        (uint8_t)b1, (uint8_t)b2, (uint8_t)b3);
+    return mrb_nil_value();
+}
+
+/* ========================================================================
+ * Filters (MIDI.filter / MIDI.on)
+ * ======================================================================== */
+
+/* MIDI._filter_init -> 0 / -1 */
+static mrb_value
+mrb_midi_filter_init(mrb_state *mrb, mrb_value self)
+{
+    return mrb_fixnum_value(MIDI_Filter_init());
+}
+
+/* MIDI._filter_set(src_bit, dst_mask, types, channel, overflow) -> 0 / -1 */
+static mrb_value
+mrb_midi_filter_set(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src, dst, types, channel, overflow;
+    mrb_get_args(mrb, "iiiii", &src, &dst, &types, &channel, &overflow);
+    return mrb_fixnum_value(MIDI_route_set_filter((uint8_t)src, (uint16_t)dst,
+                                                  (uint16_t)types, (int)channel,
+                                                  (uint8_t)overflow));
+}
+
+/* MIDI._filter_clear(src_bit, dst_mask) -> number removed */
+static mrb_value
+mrb_midi_filter_clear(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src, dst;
+    mrb_get_args(mrb, "ii", &src, &dst);
+    return mrb_fixnum_value(MIDI_route_clear_filter((uint8_t)src, (uint16_t)dst));
+}
+
+/* MIDI._filter_pop -> [dst_mask, src_bit, cin, b1, b2, b3] or nil */
+static mrb_value
+mrb_midi_filter_pop(mrb_state *mrb, mrb_value self)
+{
+    uint16_t dst;
+    uint8_t src, cin, b1, b2, b3;
+    if (!MIDI_Filter_pop(&dst, &src, &cin, &b1, &b2, &b3)) {
+        return mrb_nil_value();
+    }
+    mrb_value a = mrb_ary_new_capa(mrb, 6);
+    mrb_ary_push(mrb, a, mrb_fixnum_value(dst));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(src));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(cin));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(b1));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(b2));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(b3));
+    return a;
+}
+
+/* MIDI._filter_wait(timeout_ms) -> true when an event is waiting */
+static mrb_value
+mrb_midi_filter_wait(mrb_state *mrb, mrb_value self)
+{
+    mrb_int ms;
+    mrb_get_args(mrb, "i", &ms);
+    return mrb_bool_value(MIDI_Filter_wait(ms > 0 ? (uint32_t)ms : 0));
+}
+
+/* MIDI._filter_flush */
+static mrb_value
+mrb_midi_filter_flush(mrb_state *mrb, mrb_value self)
+{
+    MIDI_Filter_flush();
+    return mrb_nil_value();
+}
+
+/* MIDI._filter_overflows -> packets the queue had no room for */
+static mrb_value
+mrb_midi_filter_overflows(mrb_state *mrb, mrb_value self)
+{
+    return mrb_fixnum_value((mrb_int)MIDI_route_filter_overflows());
+}
+
+/* MIDI._external_bpm_from(src_bit) -> Float */
+static mrb_value
+mrb_midi_external_bpm_from(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src;
+    mrb_get_args(mrb, "i", &src);
+    return mrb_float_value(mrb, (mrb_float)MIDI_Input_get_external_bpm_from((uint8_t)src));
+}
+
+/* MIDI._reset_external_clock_from(src_bit) */
+static mrb_value
+mrb_midi_reset_external_clock_from(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src;
+    mrb_get_args(mrb, "i", &src);
+    MIDI_Input_reset_external_clock_from((uint8_t)src);
+    return mrb_nil_value();
 }
 
 static mrb_value
@@ -442,6 +595,36 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
                                   mrb_midi_route_start, MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_sources),
                                   mrb_midi_route_sources, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_targets_of),
+                                  mrb_midi_route_targets_of, MRB_ARGS_REQ(1));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_transport_send),
+                                  mrb_midi_transport_send, MRB_ARGS_REQ(5));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_get),
+                                  mrb_midi_route_get, MRB_ARGS_REQ(1));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_filtered),
+                                  mrb_midi_route_filtered, MRB_ARGS_REQ(1));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM_Q(_transport_connected),
+                                  mrb_midi_transport_connected, MRB_ARGS_REQ(1));
+
+    /* Filters (MIDI.filter / MIDI.on) */
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_init),
+                                  mrb_midi_filter_init, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_set),
+                                  mrb_midi_filter_set, MRB_ARGS_REQ(5));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_clear),
+                                  mrb_midi_filter_clear, MRB_ARGS_REQ(2));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_pop),
+                                  mrb_midi_filter_pop, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_wait),
+                                  mrb_midi_filter_wait, MRB_ARGS_REQ(1));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_flush),
+                                  mrb_midi_filter_flush, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_filter_overflows),
+                                  mrb_midi_filter_overflows, MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_external_bpm_from),
+                                  mrb_midi_external_bpm_from, MRB_ARGS_REQ(1));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_reset_external_clock_from),
+                                  mrb_midi_reset_external_clock_from, MRB_ARGS_REQ(1));
 
     /* MIDI::Clock */
     class_Clock = mrb_define_class_under_id(mrb, module_MIDI, MRB_SYM(Clock),

@@ -28,14 +28,15 @@ device.trigger(60, 100, duration: 200)   # note_off auto-fires after 200ms
 ### Receive events
 
 ```ruby
-input = MIDI::Input.new(device)
-input.on(:note_on) { |e| puts "ON #{e[:note]} vel=#{e[:velocity]}" }
-input.start
+MIDI.on(device, :note_on) { |m| puts "ON #{m.note} vel=#{m.velocity}" }
 loop do
-  input.process
-  sleep_ms 5
+  MIDI.sleep_ms 20      # listeners run here, as messages arrive
 end
 ```
+
+`MIDI.on` is a filter with no destination (below), so it hears every
+route source: the USB-MIDI host, the UART, the USB-MIDI device and
+transports that push their own output. (`MIDI::Input` is deprecated.)
 
 ### Route one transport to another (MIDI Thru)
 
@@ -56,6 +57,26 @@ plus transports that produce MIDI themselves and declare it with
 `MIDI_route_targets()` and send on their own (an on-screen keyboard, for
 example). Any transport in the registry can be a destination. A
 `MIDI::Input` on the source still receives every message, routed or not.
+
+### Filter a route in Ruby
+
+A filter diverts what a route would forward to one destination into a
+Ruby block. Only the message types it asks for leave C (clock and the
+rest still go straight through), and other destinations are untouched:
+
+```ruby
+MIDI.route(kb, synth).filter(types: [:note_on, :note_off]) do |m|
+  m.note += 12
+  m                     # a Message is sent, an Array of them each sent, nil dropped
+end
+```
+
+Blocks run in `MIDI.run_filters`, which `MIDI.sleep_ms`, the clock
+loops and `process_all_inputs` call; while a filter exists, those sleep
+on the filter queue and wake as soon as a message is queued. A full queue
+sends messages on unfiltered (`overflow: :bypass`, default) or drops them
+(`overflow: :drop`). `MIDI::NoteMap` keeps note offs in step with note ons
+through a filter that changes notes differently each time.
 
 ### BPM-synced loop
 
@@ -97,7 +118,19 @@ MIDI.on_bpm_change { |new_bpm| puts "BPM is now #{new_bpm}" }
   (or `MIDI::Device`) to another in C. `channel:` 0..15 passes only that
   channel's voice messages; `nil` passes every channel plus clock / start /
   stop / SysEx. Returns `false` when the route table (8 entries) is full.
-- `MIDI.unroute(from, to = nil)` / `MIDI.unroute_all` - Remove routes.
+  Returns a `MIDI::Route` (`#filter`, `#unfilter`, `#unroute`).
+- `MIDI.unroute(from, to = nil)` / `MIDI.unroute_all` - Remove routes (and
+  their filters).
+- `MIDI.filter(from, to = nil, types: nil, channel: nil, overflow: :bypass) { |m| ... }` -
+  Run a block on what the route from `from` to `to` forwards; with no `to`, a
+  listener. Returns the block, or `false` when a table is full.
+- `MIDI.unfilter(from, to = nil, handler = nil)` - Remove filters (not listeners).
+- `MIDI.on(from, type = :any, channel: nil) { |m| ... }` / `MIDI.off(from, type = nil, handler = nil)` -
+  Listeners. `:any` is every channel message; realtime types only when named.
+- `MIDI.external_bpm(from)` / `MIDI.reset_external_clock(from)` - Tempo of the
+  clock arriving on a source (USB host, UART, USB device).
+- `MIDI.run_filters(max = 64)` - Run queued filter work (for loops of your own).
+- `MIDI.filter_stats` - `{ overflows: }`.
 - `MIDI.bpm_loop(...)` - Legacy version of `start!`. Kept for now;
   prefer `start!`.
 
@@ -126,7 +159,14 @@ Wraps any transport that implements `send_packet` / `transport_id` /
   array of bytes; with `wrap: true` the leading `0xF0` and trailing `0xF7`
   are added automatically.
 
-### `MIDI::Input`
+### `MIDI::Message`
+
+What filters and listeners get: `type`, `channel`, `note` / `velocity`,
+`cc` / `program`, `value` (pitch bend as -8192..8191), `source` (Symbol),
+`device`, `raw` (`[cin, b1, b2, b3]`, data clamped to 0..127),
+`with(note:, velocity:, ...)` for a changed copy.
+
+### `MIDI::Input` (deprecated: use `MIDI.on`)
 
 - `MIDI::Input.new(device, auto_process: true)`
 - `on(event_type) { |event| ... }` where `event_type` is `:note_on`,

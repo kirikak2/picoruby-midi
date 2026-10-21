@@ -122,6 +122,13 @@ void MIDI_Input_set_queueing(bool on);
  * driver starts it once a device appears. */
 int MIDI_Input_start_routing(void);
 
+/* Make sure something reads route source `src_bit` (what MIDI.route does from
+ * Ruby, for C callers such as the MIDI Devices screen): starts the UART's
+ * input when it is up but not reading, then the input task. Other sources
+ * push their packets themselves. Returns MIDI_Input_start_routing()'s result,
+ * or 0. */
+int MIDI_route_start_source(uint8_t src_bit);
+
 /* Stop background processing task */
 void MIDI_Input_stop(void);
 
@@ -162,6 +169,29 @@ void MIDI_Input_reset_external_clock_sam(void);
 
 /* Reset external clock tracking (legacy - resets both) */
 void MIDI_Input_reset_external_clock(void);
+
+/* External BPM of the route source `src_bit` (USB host 0x01, UART 0x02, USB
+ * device 0x04; 0.0 for any other source or until enough clocks arrived).
+ * Tracked by the input task while it reads that source. */
+float MIDI_Input_get_external_bpm_from(uint8_t src_bit);
+void MIDI_Input_reset_external_clock_from(uint8_t src_bit);
+
+/*
+ * Filter queue (MIDI.filter / MIDI.on)
+ *
+ * The port's sink for the route table's filters (midi_route.h): packets a
+ * filter diverts wait here for Ruby. Created on first use. Each entry is a
+ * midi_filter_event_t; uint8_t fields are returned through the out
+ * parameters so this header does not need midi_route.h.
+ */
+int  MIDI_Filter_init(void);
+/* Pop one event. false when empty. */
+bool MIDI_Filter_pop(uint16_t *dst, uint8_t *src, uint8_t *cin,
+                     uint8_t *b1, uint8_t *b2, uint8_t *b3);
+/* Block up to timeout_ms until an event is queued. true if one is. */
+bool MIDI_Filter_wait(uint32_t timeout_ms);
+/* Drop everything queued (a script's filters are gone, so are its events). */
+void MIDI_Filter_flush(void);
 
 /*
  * Note Scheduler API

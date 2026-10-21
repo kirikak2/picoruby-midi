@@ -360,6 +360,9 @@ static volatile bool g_input_was_started = false;  /* Track if input was ever st
  */
 static midi_parser_t *g_usb_parser = NULL;
 static midi_parser_t *g_sam_parser = NULL;
+/* Only for the external clock of what the PC sends (the USB device is read
+ * for routes and filters, never queued for MIDI::Input). */
+static midi_parser_t *g_usbdev_parser = NULL;
 
 /* A parsed event back as a USB-MIDI packet, for routing what arrived as
  * raw UART bytes. Returns false for what is not forwarded (SysEx). */
@@ -524,6 +527,12 @@ static void midi_input_task(void *arg)
                 for (int i = 0; i + 3 < read_len; i += 4) {
                     MIDI_route_packet(MIDI_TRANSPORT_USB_DEVICE, buffer[i] & 0x0F,
                                       buffer[i + 1], buffer[i + 2], buffer[i + 3]);
+                    if (midi_parser_feed_usb(g_usbdev_parser, buffer[i] & 0x0F,
+                                             buffer[i + 1], buffer[i + 2], buffer[i + 3],
+                                             (uint64_t)esp_timer_get_time(), &event)
+                        && event.sysex_data) {
+                        free(event.sysex_data);   /* parsed for the clock only */
+                    }
                 }
             }
         }
@@ -543,6 +552,7 @@ static void midi_input_task(void *arg)
     /* Reset parsers (running status, SysEx, BPM tracker) */
     midi_parser_reset(g_usb_parser);
     midi_parser_reset(g_sam_parser);
+    midi_parser_reset(g_usbdev_parser);
 
     ESP_LOGI(INPUT_TAG, "Input task stopped");
     vTaskDelete(NULL);
@@ -554,7 +564,7 @@ static void midi_input_task(void *arg)
 int MIDI_Input_init(void)
 {
     if (g_usb_event_queue != NULL && g_sam_event_queue != NULL
-        && g_usb_parser != NULL && g_sam_parser != NULL) {
+        && g_usb_parser != NULL && g_sam_parser != NULL && g_usbdev_parser != NULL) {
         return 0;  /* Already initialized */
     }
 
@@ -598,6 +608,13 @@ int MIDI_Input_init(void)
             return -1;
         }
     }
+    if (g_usbdev_parser == NULL) {
+        g_usbdev_parser = midi_parser_new(MIDI_SOURCE_USB);
+        if (g_usbdev_parser == NULL) {
+            ESP_LOGE(INPUT_TAG, "Failed to allocate USB device parser");
+            return -1;
+        }
+    }
 
     ESP_LOGI(INPUT_TAG, "Input initialized (USB and SAM2695 queues + parsers)");
     return 0;
@@ -627,6 +644,10 @@ void MIDI_Input_deinit(void)
     if (g_sam_parser != NULL) {
         midi_parser_free(g_sam_parser);
         g_sam_parser = NULL;
+    }
+    if (g_usbdev_parser != NULL) {
+        midi_parser_free(g_usbdev_parser);
+        g_usbdev_parser = NULL;
     }
 }
 
@@ -661,6 +682,7 @@ int MIDI_Input_start(void)
     /* Reset parsers (running status, SysEx, BPM tracker) */
     midi_parser_reset(g_usb_parser);
     midi_parser_reset(g_sam_parser);
+    midi_parser_reset(g_usbdev_parser);
 
     g_input_running = true;
     BaseType_t ret = xTaskCreatePinnedToCore(
@@ -720,6 +742,17 @@ int MIDI_Input_start_routing(void)
      * USB host driver restarts it on (re)connect when this is set. */
     g_input_was_started = true;
     return MIDI_Input_start();
+}
+
+int MIDI_route_start_source(uint8_t src_bit)
+{
+    if ((src_bit & MIDI_ROUTE_INPUT_SOURCES) == 0) return 0;
+    if (src_bit == MIDI_TRANSPORT_SAM2695
+        && g_sam_transport.ops->is_connected(g_sam_transport.ctx)
+        && !UART_MIDI_Input_is_running()) {
+        UART_MIDI_Input_start();
+    }
+    return MIDI_Input_start_routing();
 }
 
 void MIDI_Input_stop(void)
@@ -873,6 +906,88 @@ void MIDI_Input_reset_external_clock(void)
 {
     MIDI_Input_reset_external_clock_usb();
     MIDI_Input_reset_external_clock_sam();
+}
+
+static midi_parser_t *parser_for(uint8_t src_bit)
+{
+    switch (src_bit) {
+    case MIDI_TRANSPORT_USB:        return g_usb_parser;
+    case MIDI_TRANSPORT_SAM2695:    return g_sam_parser;
+    case MIDI_TRANSPORT_USB_DEVICE: return g_usbdev_parser;
+    default:                        return NULL;
+    }
+}
+
+float MIDI_Input_get_external_bpm_from(uint8_t src_bit)
+{
+    return midi_parser_get_external_bpm(parser_for(src_bit));  /* NULL-safe */
+}
+
+void MIDI_Input_reset_external_clock_from(uint8_t src_bit)
+{
+    midi_parser_t *p = parser_for(src_bit);
+    if (p) midi_parser_reset_external_clock(p);
+}
+
+/* ========================================
+ * Filter queue (MIDI.filter / MIDI.on)
+ * ======================================== */
+
+/* Each entry is 8 bytes. Deep enough for a chord or a burst of CCs while the
+ * script is between MIDI.sleep_ms / UI.process calls. */
+#ifndef MIDI_FILTER_QUEUE_SIZE
+#define MIDI_FILTER_QUEUE_SIZE 64
+#endif
+
+static QueueHandle_t g_filter_queue = NULL;
+
+/* Runs on whatever task forwards the packet (input task, UI task): never
+ * blocks. */
+static bool filter_sink(const midi_filter_event_t *ev)
+{
+    return xQueueSend(g_filter_queue, ev, 0) == pdTRUE;
+}
+
+int MIDI_Filter_init(void)
+{
+    if (g_filter_queue != NULL) return 0;
+    g_filter_queue = xQueueCreate(MIDI_FILTER_QUEUE_SIZE, sizeof(midi_filter_event_t));
+    if (g_filter_queue == NULL) {
+        ESP_LOGE(INPUT_TAG, "Failed to create filter queue");
+        return -1;
+    }
+    MIDI_route_set_filter_sink(filter_sink);
+    return 0;
+}
+
+bool MIDI_Filter_pop(uint16_t *dst, uint8_t *src, uint8_t *cin,
+                     uint8_t *b1, uint8_t *b2, uint8_t *b3)
+{
+    midi_filter_event_t ev;
+    if (g_filter_queue == NULL || xQueueReceive(g_filter_queue, &ev, 0) != pdTRUE) {
+        return false;
+    }
+    *dst = ev.dst; *src = ev.src; *cin = ev.cin;
+    *b1 = ev.b1; *b2 = ev.b2; *b3 = ev.b3;
+    return true;
+}
+
+bool MIDI_Filter_wait(uint32_t timeout_ms)
+{
+    midi_filter_event_t ev;
+    if (g_filter_queue == NULL) {
+        vTaskDelay(pdMS_TO_TICKS(timeout_ms));
+        return false;
+    }
+
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (ticks == 0 && timeout_ms > 0) ticks = 1;   /* < 1 tick at 100 Hz would not block */
+    return xQueuePeek(g_filter_queue, &ev, ticks) == pdTRUE;
+}
+
+void MIDI_Filter_flush(void)
+{
+    if (g_filter_queue != NULL) xQueueReset(g_filter_queue);
 }
 
 /* ========================================

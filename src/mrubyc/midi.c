@@ -7,6 +7,7 @@
 
 #include "../../include/midi.h"
 #include "../../include/midi_route.h"
+#include "../../include/midi_transport.h"
 
 /*
  * MIDI::Clock._init_timer
@@ -548,6 +549,166 @@ c_midi_route_sources(mrbc_vm *vm, mrbc_value v[], int argc)
 }
 
 /*
+ * MIDI._route_targets_of(src_bit) -> transports any route from src_bit forwards to
+ */
+static void
+c_midi_route_targets_of(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    uint8_t s, d, all = 0;
+    if (argc >= 1) {
+        for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
+            if (MIDI_route_get(i, &s, &d, NULL) && s == (uint8_t)GET_INT_ARG(1)) all |= d;
+        }
+    }
+    SET_INT_RETURN(all);
+}
+
+/*
+ * MIDI._route_get(i) -> [src_bit, dst_mask, channel] or nil
+ */
+static void
+c_midi_route_get(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    uint8_t src, dst;
+    int ch;
+    if (argc < 1 || !MIDI_route_get((int)GET_INT_ARG(1), &src, &dst, &ch)) {
+        SET_NIL_RETURN();
+        return;
+    }
+    int vals[3] = { src, dst, ch };
+    mrbc_value arr = mrbc_array_new(vm, 3);
+    for (int i = 0; i < 3; i++) {
+        mrbc_value iv = mrbc_integer_value(vals[i]);
+        mrbc_array_set(&arr, i, &iv);
+    }
+    SET_RETURN(arr);
+}
+
+/*
+ * MIDI._route_filtered(src_bit) -> destinations with a filter (0x100 = Ruby)
+ */
+static void
+c_midi_route_filtered(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN(argc >= 1 ? MIDI_route_filtered((uint8_t)GET_INT_ARG(1)) : 0);
+}
+
+/*
+ * MIDI._transport_connected?(bit)
+ */
+static void
+c_midi_transport_connected(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    const midi_transport_t *t = argc >= 1 ? MIDI_transport_get((uint8_t)GET_INT_ARG(1)) : NULL;
+    if (t && t->ops && t->ops->is_connected && t->ops->is_connected(t->ctx)) {
+        SET_TRUE_RETURN();
+    } else {
+        SET_FALSE_RETURN();
+    }
+}
+
+/*
+ * MIDI._transport_send(mask, cin, b1, b2, b3)
+ */
+static void
+c_midi_transport_send(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc >= 5) {
+        MIDI_transport_send((uint8_t)GET_INT_ARG(1), 0, (uint8_t)(GET_INT_ARG(2) & 0x0F),
+                            (uint8_t)GET_INT_ARG(3), (uint8_t)GET_INT_ARG(4),
+                            (uint8_t)GET_INT_ARG(5));
+    }
+    SET_NIL_RETURN();
+}
+
+/*
+ * Filters (MIDI.filter / MIDI.on). Same contracts as the mruby binding.
+ */
+static void
+c_midi_filter_init(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN(MIDI_Filter_init());
+}
+
+static void
+c_midi_filter_set(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc < 5) {
+        SET_INT_RETURN(-1);
+        return;
+    }
+    SET_INT_RETURN(MIDI_route_set_filter((uint8_t)GET_INT_ARG(1), (uint16_t)GET_INT_ARG(2),
+                                         (uint16_t)GET_INT_ARG(3), (int)GET_INT_ARG(4),
+                                         (uint8_t)GET_INT_ARG(5)));
+}
+
+static void
+c_midi_filter_clear(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc < 2) {
+        SET_INT_RETURN(0);
+        return;
+    }
+    SET_INT_RETURN(MIDI_route_clear_filter((uint8_t)GET_INT_ARG(1), (uint16_t)GET_INT_ARG(2)));
+}
+
+static void
+c_midi_filter_pop(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    uint16_t dst;
+    uint8_t src, cin, b1, b2, b3;
+    if (!MIDI_Filter_pop(&dst, &src, &cin, &b1, &b2, &b3)) {
+        SET_NIL_RETURN();
+        return;
+    }
+    int vals[6] = { dst, src, cin, b1, b2, b3 };
+    mrbc_value arr = mrbc_array_new(vm, 6);
+    for (int i = 0; i < 6; i++) {
+        mrbc_value iv = mrbc_integer_value(vals[i]);
+        mrbc_array_set(&arr, i, &iv);
+    }
+    SET_RETURN(arr);
+}
+
+static void
+c_midi_filter_wait(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    int ms = argc >= 1 ? (int)GET_INT_ARG(1) : 0;
+    if (MIDI_Filter_wait(ms > 0 ? (uint32_t)ms : 0)) {
+        SET_TRUE_RETURN();
+    } else {
+        SET_FALSE_RETURN();
+    }
+}
+
+static void
+c_midi_filter_flush(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    MIDI_Filter_flush();
+    SET_NIL_RETURN();
+}
+
+static void
+c_midi_filter_overflows(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN((int)MIDI_route_filter_overflows());
+}
+
+static void
+c_midi_external_bpm_from(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    float bpm = argc >= 1 ? MIDI_Input_get_external_bpm_from((uint8_t)GET_INT_ARG(1)) : 0.0f;
+    SET_FLOAT_RETURN(bpm);
+}
+
+static void
+c_midi_reset_external_clock_from(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc >= 1) MIDI_Input_reset_external_clock_from((uint8_t)GET_INT_ARG(1));
+    SET_NIL_RETURN();
+}
+
+/*
  * Gem initialization
  */
 void
@@ -567,6 +728,22 @@ mrbc_midi_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_MIDI, "_route_clear", c_midi_route_clear);
     mrbc_define_method(vm, module_MIDI, "_route_start", c_midi_route_start);
     mrbc_define_method(vm, module_MIDI, "_route_sources", c_midi_route_sources);
+    mrbc_define_method(vm, module_MIDI, "_route_targets_of", c_midi_route_targets_of);
+    mrbc_define_method(vm, module_MIDI, "_transport_send", c_midi_transport_send);
+    mrbc_define_method(vm, module_MIDI, "_route_get", c_midi_route_get);
+    mrbc_define_method(vm, module_MIDI, "_route_filtered", c_midi_route_filtered);
+    mrbc_define_method(vm, module_MIDI, "_transport_connected?", c_midi_transport_connected);
+
+    /* Filters (MIDI.filter / MIDI.on) */
+    mrbc_define_method(vm, module_MIDI, "_filter_init", c_midi_filter_init);
+    mrbc_define_method(vm, module_MIDI, "_filter_set", c_midi_filter_set);
+    mrbc_define_method(vm, module_MIDI, "_filter_clear", c_midi_filter_clear);
+    mrbc_define_method(vm, module_MIDI, "_filter_pop", c_midi_filter_pop);
+    mrbc_define_method(vm, module_MIDI, "_filter_wait", c_midi_filter_wait);
+    mrbc_define_method(vm, module_MIDI, "_filter_flush", c_midi_filter_flush);
+    mrbc_define_method(vm, module_MIDI, "_filter_overflows", c_midi_filter_overflows);
+    mrbc_define_method(vm, module_MIDI, "_external_bpm_from", c_midi_external_bpm_from);
+    mrbc_define_method(vm, module_MIDI, "_reset_external_clock_from", c_midi_reset_external_clock_from);
 
     /* Define Clock class under MIDI */
     mrbc_class *class_Clock = mrbc_define_class_under(vm, module_MIDI, "Clock", mrbc_class_object);

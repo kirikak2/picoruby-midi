@@ -42,7 +42,8 @@ module MIDI
     end
 
     # Sleep with automatic MIDI event processing
-    # Use this instead of sleep_ms to auto-dispatch events
+    # Use this instead of sleep_ms to auto-dispatch events. Filters
+    # (MIDI.filter / MIDI.on) run as their messages arrive.
     # @param ms [Integer] Milliseconds to sleep
     def sleep_ms(ms)
       # Process events before sleeping
@@ -52,17 +53,18 @@ module MIDI
       remaining = ms
       while remaining > 0
         chunk = remaining > 50 ? 50 : remaining
-        Kernel.sleep_ms(chunk)
+        _idle_ms(chunk)
         process_all_inputs
         remaining -= chunk
       end
     end
 
-    # Process all active inputs
+    # Process all active inputs and run the filters
     def process_all_inputs
       $__midi_active_inputs__.each do |inp|
         inp.process
       end
+      run_filters
     end
 
     # Register an input for auto-processing
@@ -120,7 +122,8 @@ module MIDI
     #   (yield on every 24 PPQ tick). Common alternatives: 1 (quarter),
     #   4 (sixteenth), 8 (32nd).
     # @yieldparam clock_count [Integer] Current 24 PPQ clock count.
-    def start!(bpm: 120, output: nil, sync: nil, subdivisions: 24, &block)
+    def start!(bpm: 120, output: nil, sync: nil, sync_from: nil, subdivisions: 24, &block)
+      sync = ClockSource.new(sync_from) if sync_from
       callable_bpm = bpm.respond_to?(:call) ? bpm : nil
       current_bpm = (callable_bpm ? callable_bpm.call : bpm).to_f
       unless current_bpm > 20.0 && current_bpm < 300.0
@@ -214,9 +217,9 @@ module MIDI
             elapsed = _uptime_ms - loop_start
             remaining = subdivision_interval_ms - elapsed
             if remaining > 1
-              Kernel.sleep_ms(remaining.to_i)
+              _idle_ms(remaining.to_i)
             else
-              Kernel.sleep_ms(1)
+              _idle_ms(1)
             end
             next
           end
@@ -224,9 +227,9 @@ module MIDI
           now = _uptime_ms
           sleep_time = next_clock_time - now
           if sleep_time > 1
-            Kernel.sleep_ms(sleep_time.to_i)
+            _idle_ms(sleep_time.to_i)
           else
-            Kernel.sleep_ms(1)
+            _idle_ms(1)
           end
 
           process_all_inputs
@@ -251,7 +254,9 @@ module MIDI
     #   24 = every clock (for MML with maximum timing precision)
     # @param send_start [Boolean] Send MIDI Start message before loop (default: true)
     # @param sync [Boolean] Sync to external MIDI clock BPM (default: false)
-    # @param input [MIDI::Input, nil] MIDI input for external BPM sync (required if sync: true)
+    # @param input [MIDI::Input, nil] MIDI input for external BPM sync (deprecated: use sync_from:)
+    # @param sync_from [Object, nil] source to follow the external clock of
+    #   (a transport, MIDI::Device or UI::MIDIDevices.input); implies sync: true
     # @param on_loop [Proc, nil] Callback executed on each loop iteration (optional)
     # @param on_error [Proc, nil] Callback executed on error (optional)
     # @yieldparam clock_count [Integer] Current MIDI clock count (24 PPQ)
@@ -263,7 +268,11 @@ module MIDI
     #   MIDI.bpm_loop(120, output: device, subdivisions: 24) do |clock|
     #     player.tick(clock)
     #   end
-    def bpm_loop(bpm = 120, output: nil, subdivisions: 1, send_start: true, sync: false, input: nil, on_loop: nil, on_error: nil, bpm_source: nil)
+    def bpm_loop(bpm = 120, output: nil, subdivisions: 1, send_start: true, sync: false, input: nil, sync_from: nil, on_loop: nil, on_error: nil, bpm_source: nil)
+      if sync_from
+        sync = true
+        input = ClockSource.new(sync_from)
+      end
       # Current BPM (may be updated by sync, bpm_source, or
       # MIDI._notify_bpm_change)
       current_bpm = bpm.to_f
@@ -411,9 +420,9 @@ module MIDI
           elapsed = _uptime_ms - loop_start
           remaining = subdivision_interval_ms - elapsed
           if remaining > 1
-            Kernel.sleep_ms(remaining.to_i)
+            _idle_ms(remaining.to_i)
           else
-            Kernel.sleep_ms(1)
+            _idle_ms(1)
           end
           next
         end
@@ -424,10 +433,10 @@ module MIDI
 
         # Sleep until next clock time
         if sleep_time > 1
-          Kernel.sleep_ms(sleep_time.to_i)
+          _idle_ms(sleep_time.to_i)
         else
           # Minimum sleep for task switching
-          Kernel.sleep_ms(1)
+          _idle_ms(1)
         end
 
         # Execute on_loop callback if provided
@@ -445,13 +454,6 @@ module MIDI
       end
     end
 
-    # Get external BPM from the first active input
-    # @return [Float] Detected BPM from external MIDI clock, or 0.0 if none
-    def external_bpm
-      inp = $__midi_active_inputs__.first
-      inp ? inp.external_bpm : 0.0
-    end
-
     # Run a block for a specified duration with task switching
     # @param duration_ms [Integer] Total duration in milliseconds
     # @param interval_ms [Integer] Interval between iterations (default: 10ms)
@@ -467,10 +469,28 @@ module MIDI
     end
   end
 
+  # The external clock of a route source, for sync: / input: of the clock
+  # loops (what sync_from: wraps its argument in).
+  class ClockSource
+    def initialize(from)
+      @from = from
+    end
+
+    def external_bpm
+      MIDI.external_bpm(@from)
+    end
+  end
+
+  # Deprecated: use MIDI.on(from, type) { |m| ... } (midi_filter.rb), which
+  # also hears the USB-MIDI device and UI::Keys.
   class Input
     # @param device [MIDI::Device] MIDI device to read from
     # @param auto_process [Boolean] If true, register for auto-processing
     def initialize(device, auto_process: true)
+      unless $__midi_input_deprecation_shown__
+        $__midi_input_deprecation_shown__ = true
+        puts "[MIDI] MIDI::Input is deprecated; use MIDI.on(device, :note_on) { |m| ... }"
+      end
       @device = device
       @transport = device.transport
       @handlers = {}

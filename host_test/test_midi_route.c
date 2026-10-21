@@ -41,6 +41,18 @@ static midi_transport_t g_t[8];
 
 static void reset_hits(void) { memset(g_hits, 0, sizeof(g_hits)); }
 
+/* Fake filter queue */
+#define SINK_CAP 4
+static midi_filter_event_t g_sunk[SINK_CAP];
+static int g_sunk_n;
+
+static bool fake_sink(const midi_filter_event_t *ev)
+{
+    if (g_sunk_n >= SINK_CAP) return false;
+    g_sunk[g_sunk_n++] = *ev;
+    return true;
+}
+
 int main(void)
 {
     for (int i = 0; i < 8; i++) {
@@ -131,6 +143,99 @@ int main(void)
     MIDI_route_set_source(0x10, false);
     EXPECT_EQ(MIDI_route_sources(), MIDI_ROUTE_INPUT_SOURCES);
     MIDI_route_clear();
+
+    printf("filter: arguments\n");
+    EXPECT_EQ(MIDI_route_set_filter(0x03, 0x08, 0x0300, -1, 0), -1);  /* source not one bit */
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x01, 0x0300, -1, 0), -1);  /* only itself */
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x08, 0, -1, 0), -1);       /* no types */
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x08, 0x0300, 16, 0), -1);  /* bad channel */
+
+    printf("filter: no sink, nothing diverted\n");
+    EXPECT_EQ(MIDI_route_add(0x01, 0x08 | 0x02, MIDI_ROUTE_ALL_CHANNELS), 0);
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x08, 0x0300, -1, MIDI_FILTER_OVERFLOW_BYPASS), 0);
+    MIDI_route_packet(0x01, 0x9, 0x90, 60, 100);
+    EXPECT_EQ(g_hits[3], 1); EXPECT_EQ(g_hits[1], 1);
+    reset_hits();
+
+    printf("filter: divert matching types only\n");
+    MIDI_route_set_filter_sink(fake_sink);
+    MIDI_route_packet(0x01, 0x9, 0x90, 60, 100);      /* note on: diverted for 0x08 */
+    EXPECT_EQ(g_hits[3], 0); EXPECT_EQ(g_hits[1], 1);
+    EXPECT_EQ(g_sunk_n, 1);
+    EXPECT_EQ(g_sunk[0].src, 0x01); EXPECT_EQ(g_sunk[0].dst, 0x08);
+    EXPECT_EQ(g_sunk[0].cin, 0x9);  EXPECT_EQ(g_sunk[0].b2, 60);
+    MIDI_route_packet(0x01, 0xF, 0xF8, 0, 0);         /* clock: straight through */
+    EXPECT_EQ(g_hits[3], 1); EXPECT_EQ(g_hits[1], 2);
+    EXPECT_EQ(g_sunk_n, 1);
+    EXPECT_EQ(MIDI_route_filtered(0x01), 0x08);
+    reset_hits(); g_sunk_n = 0;
+
+    printf("filter: channel\n");
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x08, 0x0300, 9, MIDI_FILTER_OVERFLOW_BYPASS), 0); /* replaces */
+    MIDI_route_packet(0x01, 0x9, 0x90, 60, 100);      /* ch 0: direct */
+    MIDI_route_packet(0x01, 0x9, 0x99, 36, 100);      /* ch 9: diverted */
+    EXPECT_EQ(g_hits[3], 1); EXPECT_EQ(g_sunk_n, 1); EXPECT_EQ(g_sunk[0].b1, 0x99);
+    reset_hits(); g_sunk_n = 0;
+
+    printf("filter: Ruby listener needs no route\n");
+    EXPECT_EQ(MIDI_route_set_filter(0x04, MIDI_ROUTE_DST_RUBY, 0xFFFF, -1, 0), 0);
+    EXPECT_EQ(MIDI_route_from(0x04), 1);
+    MIDI_route_packet(0x04, 0xB, 0xB0, 74, 1);
+    EXPECT_EQ(g_sunk_n, 1); EXPECT_EQ(g_sunk[0].dst, MIDI_ROUTE_DST_RUBY);
+    for (int i = 0; i < 8; i++) EXPECT_EQ(g_hits[i], 0);
+    g_sunk_n = 0;
+
+    printf("filter: listener and route filter share one event\n");
+    EXPECT_EQ(MIDI_route_set_filter(0x01, MIDI_ROUTE_DST_RUBY, 0x0200, -1, 0), 0);
+    MIDI_route_packet(0x01, 0x9, 0x99, 36, 100);
+    EXPECT_EQ(g_sunk_n, 1); EXPECT_EQ(g_sunk[0].dst, 0x08 | MIDI_ROUTE_DST_RUBY);
+    EXPECT_EQ(g_hits[1], 1);
+    reset_hits(); g_sunk_n = 0;
+
+    printf("filter: overflow bypass / drop\n");
+    g_sunk_n = SINK_CAP;                              /* queue full */
+    uint32_t before = MIDI_route_filter_overflows();
+    MIDI_route_packet(0x01, 0x9, 0x99, 36, 100);      /* bypass: sent on unfiltered */
+    EXPECT_EQ(g_hits[3], 1);
+    EXPECT_EQ(MIDI_route_filter_overflows(), before + 1);
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x08, 0x0300, 9, MIDI_FILTER_OVERFLOW_DROP), 0);
+    MIDI_route_packet(0x01, 0x9, 0x99, 36, 100);      /* drop */
+    EXPECT_EQ(g_hits[3], 1);
+    reset_hits(); g_sunk_n = 0;
+
+    printf("filter: dispatch for pushed sources\n");
+    MIDI_route_set_filter(0x10, 0x02, 0x0300, -1, 0);
+    MIDI_route_dispatch(0x10, 0x02 | 0x08, 0x9, 0x90, 60, 100);
+    EXPECT_EQ(g_hits[3], 1); EXPECT_EQ(g_hits[1], 0);
+    EXPECT_EQ(g_sunk_n, 1); EXPECT_EQ(g_sunk[0].dst, 0x02);
+    reset_hits(); g_sunk_n = 0;
+
+    printf("filter: clear\n");
+    EXPECT_EQ(MIDI_route_clear_filter(0x01, 0x08), 1);
+    EXPECT_EQ(MIDI_route_filtered(0x01), MIDI_ROUTE_DST_RUBY);
+    EXPECT_EQ(MIDI_route_clear_filter(0x01, 0xFFFF), 1);
+    MIDI_route_packet(0x01, 0x9, 0x99, 36, 100);
+    EXPECT_EQ(g_hits[3], 1); EXPECT_EQ(g_sunk_n, 0);
+    MIDI_route_remove(0x01, 0xFF);
+    EXPECT_EQ(MIDI_route_active(), 1);                /* filters from 0x04 / 0x10 */
+    MIDI_route_clear();
+    EXPECT_EQ(MIDI_route_active(), 0);
+    EXPECT_EQ(MIDI_route_from(0x04), 0);
+    reset_hits();
+
+    printf("filter: table full changes nothing\n");
+    for (int s = 0; s < 8; s++) {
+        EXPECT_EQ(MIDI_route_set_filter((uint8_t)(1 << s), MIDI_ROUTE_DST_RUBY, 0x0200, -1, 0), 0);
+    }
+    for (int s = 0; s < 7; s++) {
+        EXPECT_EQ(MIDI_route_set_filter((uint8_t)(1 << s), 0x80, 0x0200, -1, 0), 0);
+    }
+    EXPECT_EQ(MIDI_route_set_filter(0x80, 0x01, 0x0200, -1, 0), 0);  /* 16th slot */
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x02 | 0x04, 0x0200, -1, 0), -1);
+    EXPECT_EQ(MIDI_route_filtered(0x01), 0x80 | MIDI_ROUTE_DST_RUBY);  /* untouched */
+    EXPECT_EQ(MIDI_route_set_filter(0x01, 0x80, 0x0300, -1, 0), 0);    /* replacing still works */
+    MIDI_route_clear();
+    MIDI_route_set_filter_sink(NULL);
 
     printf("all route tests passed\n");
     return 0;
