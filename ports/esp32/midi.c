@@ -117,10 +117,15 @@ static int sam_tx_bytes_available(void *ctx)
     return UART_MIDI_bytes_available();
 }
 
+/* Up once the UART driver is installed: sending works from then on, and the
+ * input task reads received bytes straight from the driver's RX buffer.
+ * (This used to be UART_MIDI_Input_is_running(), so a UART only sending --
+ * a synth on its TX -- read as disconnected, and MIDI_route_start_source()
+ * never started reading one that was not reading yet.) */
 static bool sam_tx_is_connected(void *ctx)
 {
     (void)ctx;
-    return UART_MIDI_Input_is_running();
+    return UART_MIDI_get_status() == UART_MIDI_READY;
 }
 
 static const midi_transport_ops_t g_sam_tx_ops = {
@@ -421,6 +426,15 @@ static inline bool usbdev_input_wanted(void)
     return MIDI_route_from(MIDI_TRANSPORT_USB_DEVICE);
 }
 
+/* The UART is read when MIDI::Input started its input (as before), or when a
+ * route or filter starts from it. Otherwise received bytes stay in the
+ * driver's buffer for UART_MIDI#read_available. */
+static inline bool sam_input_wanted(void)
+{
+    return g_sam_transport.ops->is_connected(g_sam_transport.ctx)
+        && (UART_MIDI_Input_is_running() || MIDI_route_from(MIDI_TRANSPORT_SAM2695));
+}
+
 /* Background task that reads from USB-MIDI and SAM2695, forwards along the
  * routes and queues events */
 static void midi_input_task(void *arg)
@@ -443,7 +457,7 @@ static void midi_input_task(void *arg)
 
         /* Check available input sources via the Transport interface */
         usb_midi_available = g_usb_transport.ops->is_connected(g_usb_transport.ctx);
-        sam2695_available  = g_sam_transport.ops->is_connected(g_sam_transport.ctx);
+        sam2695_available  = sam_input_wanted();
         usbdev_available   = usbdev_input_wanted();
 
         /* Exit if no input sources available */
@@ -666,7 +680,7 @@ int MIDI_Input_start(void)
 
     /* Check if at least one input source is available via the Transport interface */
     bool usb_midi_available = g_usb_transport.ops->is_connected(g_usb_transport.ctx);
-    bool sam2695_available  = g_sam_transport.ops->is_connected(g_sam_transport.ctx);
+    bool sam2695_available  = sam_input_wanted();
     bool usbdev_available   = usbdev_input_wanted();
 
     ESP_LOGI(INPUT_TAG, "Starting input task - USB MIDI: %s, SAM2695: %s, USB device: %s",
@@ -747,8 +761,10 @@ int MIDI_Input_start_routing(void)
 int MIDI_route_start_source(uint8_t src_bit)
 {
     if ((src_bit & MIDI_ROUTE_INPUT_SOURCES) == 0) return 0;
+    /* The UART's own task keeps its RX buffer from overflowing; it needs the
+     * driver installed (MIDIDevices.sam2695) and an RX pin. */
     if (src_bit == MIDI_TRANSPORT_SAM2695
-        && g_sam_transport.ops->is_connected(g_sam_transport.ctx)
+        && UART_MIDI_get_status() == UART_MIDI_READY
         && !UART_MIDI_Input_is_running()) {
         UART_MIDI_Input_start();
     }
