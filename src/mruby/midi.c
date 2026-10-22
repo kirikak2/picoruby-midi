@@ -23,46 +23,89 @@
 #include "../../include/midi_transport.h"
 
 /* ========================================================================
- * MIDI::Clock
+ * MIDI::Clock (class methods: the one clock of the process)
  * ======================================================================== */
 
-static mrb_value
-mrb_midi_clock_init_timer(mrb_state *mrb, mrb_value self)
+/* Counts are cut to 30 bits so they stay Integers on every VM */
+#define CLOCK_COUNT_MASK 0x3FFFFFFF
+
+static mrb_float
+clock_bpm_arg(mrb_state *mrb)
 {
-    int ret = MIDI_Clock_init();
-    return mrb_fixnum_value(ret);
+    mrb_value v;
+    mrb_get_args(mrb, "o", &v);
+    if (mrb_float_p(v)) return mrb_float(v);
+    if (mrb_integer_p(v)) return (mrb_float)mrb_integer(v);
+    mrb_raise(mrb, E_TYPE_ERROR, "BPM must be a number");
+    return 0;
+}
+
+/* MIDI::Clock._bit -> its transport bit (starts the timer) */
+static mrb_value
+mrb_midi_clock_bit(mrb_state *mrb, mrb_value self)
+{
+    if (MIDI_Clock_init() != 0) return mrb_fixnum_value(0);
+    return mrb_fixnum_value(MIDI_Clock_bit());
 }
 
 static mrb_value
-mrb_midi_clock_start_timer(mrb_state *mrb, mrb_value self)
+mrb_midi_clock_set_bpm(mrb_state *mrb, mrb_value self)
+{
+    MIDI_Clock_set_bpm((float)clock_bpm_arg(mrb));
+    return mrb_nil_value();
+}
+
+static mrb_value
+mrb_midi_clock_get_bpm(mrb_state *mrb, mrb_value self)
+{
+    return mrb_float_value(mrb, MIDI_Clock_get_bpm());
+}
+
+static mrb_value
+mrb_midi_clock_current_bpm(mrb_state *mrb, mrb_value self)
+{
+    return mrb_float_value(mrb, MIDI_Clock_current_bpm());
+}
+
+static mrb_value
+mrb_midi_clock_start(mrb_state *mrb, mrb_value self)
 {
     MIDI_Clock_start();
     return mrb_nil_value();
 }
 
 static mrb_value
-mrb_midi_clock_stop_timer(mrb_state *mrb, mrb_value self)
+mrb_midi_clock_continue(mrb_state *mrb, mrb_value self)
+{
+    MIDI_Clock_continue();
+    return mrb_nil_value();
+}
+
+static mrb_value
+mrb_midi_clock_stop(mrb_state *mrb, mrb_value self)
 {
     MIDI_Clock_stop();
     return mrb_nil_value();
 }
 
 static mrb_value
-mrb_midi_clock_update_period(mrb_state *mrb, mrb_value self)
-{
-    mrb_value bpm_val = mrb_iv_get(mrb, self, MRB_IVSYM(bpm));
-    if (mrb_float_p(bpm_val)) {
-        MIDI_Clock_set_bpm((float)mrb_float(bpm_val));
-    } else if (mrb_integer_p(bpm_val)) {
-        MIDI_Clock_set_bpm((float)mrb_integer(bpm_val));
-    }
-    return mrb_nil_value();
-}
-
-static mrb_value
-mrb_midi_clock_timer_running(mrb_state *mrb, mrb_value self)
+mrb_midi_clock_running(mrb_state *mrb, mrb_value self)
 {
     return mrb_bool_value(MIDI_Clock_is_running());
+}
+
+/* MIDI::Clock._count -> ticks so far (30 bits, wraps) */
+static mrb_value
+mrb_midi_clock_count(mrb_state *mrb, mrb_value self)
+{
+    return mrb_fixnum_value((mrb_int)(MIDI_Clock_count() & CLOCK_COUNT_MASK));
+}
+
+/* MIDI::Clock._us_to_next -> microseconds until the next tick */
+static mrb_value
+mrb_midi_clock_us_to_next(mrb_state *mrb, mrb_value self)
+{
+    return mrb_fixnum_value((mrb_int)MIDI_Clock_us_to_next());
 }
 
 /* ========================================================================
@@ -641,16 +684,26 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
     /* MIDI::Clock */
     class_Clock = mrb_define_class_under_id(mrb, module_MIDI, MRB_SYM(Clock),
                                             mrb->object_class);
-    mrb_define_method_id(mrb, class_Clock, MRB_SYM(_init_timer),
-                         mrb_midi_clock_init_timer, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, class_Clock, MRB_SYM(_start_timer),
-                         mrb_midi_clock_start_timer, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, class_Clock, MRB_SYM(_stop_timer),
-                         mrb_midi_clock_stop_timer, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, class_Clock, MRB_SYM(_update_timer_period),
-                         mrb_midi_clock_update_period, MRB_ARGS_NONE());
-    mrb_define_method_id(mrb, class_Clock, MRB_SYM_Q(_timer_running),
-                         mrb_midi_clock_timer_running, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_bit),
+                               mrb_midi_clock_bit, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_set_bpm),
+                               mrb_midi_clock_set_bpm, MRB_ARGS_REQ(1));
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_bpm),
+                               mrb_midi_clock_get_bpm, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_current_bpm),
+                               mrb_midi_clock_current_bpm, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_start),
+                               mrb_midi_clock_start, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_continue),
+                               mrb_midi_clock_continue, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_stop),
+                               mrb_midi_clock_stop, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM_Q(_running),
+                               mrb_midi_clock_running, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_count),
+                               mrb_midi_clock_count, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, class_Clock, MRB_SYM(_us_to_next),
+                               mrb_midi_clock_us_to_next, MRB_ARGS_NONE());
 
     /* MIDI::Input */
     class_Input = mrb_define_class_under_id(mrb, module_MIDI, MRB_SYM(Input),

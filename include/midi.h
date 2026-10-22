@@ -13,49 +13,69 @@ extern "C" {
 #endif
 
 /*
- * MIDI Clock Timer API (platform-specific)
+ * The MIDI clock (platform-specific)
+ *
+ * One per process: a send-only transport in the registry and a route
+ * source (midi_route.h). From MIDI_Clock_init() on, a timer ticks 24 times
+ * per quarter note and sends Timing Clock (F8) along the routes from
+ * MIDI_Clock_bit() while there are any. Start / Continue / Stop go the same
+ * way and leave the F8s running.
  */
 
-/* Initialize clock timer */
+/* Start the timer (once; later calls return 0). Call it before routing
+ * from the clock in C. Returns 0, or -1 when the timer cannot be made. */
 int MIDI_Clock_init(void);
 
-/* Deinitialize clock timer */
+/* Stop and delete the timer */
 void MIDI_Clock_deinit(void);
 
-/* Set BPM and update timer period */
+/* The clock's bit in the transport registry (0 if the registry was full) */
+uint8_t MIDI_Clock_bit(void);
+
+/* The tempo (clamped to 20..300) */
 void MIDI_Clock_set_bpm(float bpm);
+float MIDI_Clock_get_bpm(void);
 
-/* Start timer */
+/* Run at `bpm` instead of the tempo while it is above 0 (an application
+ * following an external clock); 0 goes back to the tempo. */
+void MIDI_Clock_set_follow_bpm(float bpm);
+
+/* What the clock runs at: the follow BPM, else the tempo */
+float MIDI_Clock_current_bpm(void);
+
+/* Send Start (FA; the next F8 is the downbeat) / Continue (FB) / Stop (FC)
+ * along the clock's routes. Start and Continue start the timer if needed. */
 void MIDI_Clock_start(void);
-
-/* Stop timer */
+void MIDI_Clock_continue(void);
 void MIDI_Clock_stop(void);
 
-/* Check if timer is running */
+/* Back to stopped without sending anything (the application has just sent
+ * Stop everywhere at the end of a script) */
+void MIDI_Clock_reset(void);
+
+/* Between Start / Continue and Stop */
 bool MIDI_Clock_is_running(void);
 
-/* Set callback for clock tick (called from ISR context) */
+/* Ticks since MIDI_Clock_init() (wraps), and microseconds until the next */
+uint32_t MIDI_Clock_count(void);
+uint32_t MIDI_Clock_us_to_next(void);
+
+/* Set a callback for each tick (called from the timer task) */
 typedef void (*midi_clock_callback_t)(void);
 void MIDI_Clock_set_callback(midi_clock_callback_t callback);
 
 /*
- * Cooperative-stop hooks
+ * Cooperative-stop hook
  *
- * The clock timer and input task periodically consult the registered
- * stop-check function (if any). When it returns true, the cleanup hook
- * (if any) is invoked, then the clock and input task halt themselves.
- * Both hooks are application-supplied so picoruby-midi stays free of
- * application-layer references (e.g. picoruby-esp32's script-stop flag
- * or its all-notes-off cleanup routine).
+ * The input task periodically consults the registered stop-check function
+ * (if any) and exits when it returns true. Application-supplied so
+ * picoruby-midi stays free of application-layer references (e.g.
+ * picoruby-esp32's script-stop flag).
  */
 typedef bool (*midi_stop_check_fn)(void);
-typedef void (*midi_cleanup_fn)(void);
 
 /* Register the stop-requested predicate. NULL disables. */
 void MIDI_set_stop_check(midi_stop_check_fn fn);
-
-/* Register the cleanup hook fired right after stop_check returns true. */
-void MIDI_set_cleanup_hook(midi_cleanup_fn fn);
 
 /*
  * MIDI Input Background Task API

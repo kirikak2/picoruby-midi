@@ -90,6 +90,12 @@ module MIDI
     # MIDI Clock constant: 24 Pulses Per Quarter Note
     PPQ = 24
 
+    # MIDI::Clock._count wraps at 30 bits
+    CLOCK_COUNT_MASK = 0x3FFFFFFF
+
+    # Most clocks one pass of a loop catches up on after a long pause
+    CLOCK_CATCH_UP = 48
+
     # Run the BPM-driven dispatch loop. The recommended entry point for
     # scripts that need MIDI clock output, external BPM sync, or
     # block-per-clock dispatching.
@@ -107,12 +113,18 @@ module MIDI
     #     wrapped externally — see midori's main_task_base.rb for the
     #     pattern.
     #
+    # With a port (MIDI::Clock.hardware?) and an `output:` that is a
+    # registered transport, the clock is MIDI::Clock: the loop routes it to
+    # `output` while it runs, sends Start / Stop through it, and the block
+    # follows its ticks. Otherwise the loop sends the clock itself.
+    #
     # The block, when given, is yielded clock_count at every subdivision
     # boundary. With no block, the method is "send clock + poll inputs"
     # only.
     #
-    # @param bpm [Numeric, #call] BPM. If callable, polled per iteration
-    #   to allow dynamic tempo.
+    # @param bpm [Numeric, #call, nil] BPM. If callable, polled per
+    #   iteration to allow dynamic tempo. nil follows MIDI::Clock's tempo;
+    #   a number also sets it.
     # @param output [MIDI::Device, nil] Clock output device. nil = no
     #   clock send (input poll only).
     # @param sync [MIDI::Input, nil] External sync source. When non-nil,
@@ -122,16 +134,61 @@ module MIDI
     #   (yield on every 24 PPQ tick). Common alternatives: 1 (quarter),
     #   4 (sixteenth), 8 (32nd).
     # @yieldparam clock_count [Integer] Current 24 PPQ clock count.
-    def start!(bpm: 120, output: nil, sync: nil, sync_from: nil, subdivisions: 24, &block)
+    def start!(bpm: nil, output: nil, sync: nil, sync_from: nil, subdivisions: 24, &block)
       sync = ClockSource.new(sync_from) if sync_from
       callable_bpm = bpm.respond_to?(:call) ? bpm : nil
-      current_bpm = (callable_bpm ? callable_bpm.call : bpm).to_f
-      unless current_bpm > 20.0 && current_bpm < 300.0
-        current_bpm = 120.0
+      current_bpm = _loop_initial_bpm(callable_bpm ? callable_bpm.call : bpm)
+      clocks_per_subdivision = PPQ / subdivisions
+
+      attached = Clock._attach(output)
+      if attached
+        clocks_per_subdivision = 1 if clocks_per_subdivision < 1
+        Clock.start
+        begin
+          last_count = Clock._count
+          clock_count = 0
+          last_sync_time = _uptime_ms
+          while true
+            loop_start = _uptime_ms
+            if callable_bpm
+              begin
+                b = callable_bpm.call
+                Clock.bpm = b if b && b > 20.0 && b < 300.0 && b != current_bpm
+                current_bpm = b if b
+              rescue
+                callable_bpm = nil  # disable on error
+              end
+            elsif sync && (loop_start - last_sync_time) > 200
+              ext = sync.external_bpm
+              Clock.bpm = ext if ext > 20.0 && ext < 300.0
+              last_sync_time = loop_start
+            end
+
+            now = Clock._count
+            ticks = (now - last_count) & CLOCK_COUNT_MASK
+            last_count = now
+            ticks = CLOCK_CATCH_UP if ticks > CLOCK_CATCH_UP
+            i = 0
+            while i < ticks
+              if block_given? && (clock_count % clocks_per_subdivision) == 0
+                yield clock_count
+              end
+              clock_count += 1
+              i += 1
+            end
+            process_all_inputs if ticks > 0
+
+            _idle_ms(Clock._us_to_next / 1000 + 1)
+            process_all_inputs
+          end
+        ensure
+          Clock.stop
+          Clock._detach(output, attached)
+        end
       end
 
       clock_interval_ms = 60000.0 / current_bpm / PPQ
-      clocks_per_subdivision = PPQ / subdivisions
+      last_clock_bpm = Clock.bpm
 
       # External BPM updates from MIDI._notify_bpm_change land here; the
       # main loop picks them up at the start of each iteration.
@@ -150,7 +207,8 @@ module MIDI
         while true
           loop_start = _uptime_ms
 
-          # Update BPM from callable, external notifier, or sync source
+          # Update BPM from callable, external notifier, the clock's tempo
+          # or sync source
           new_bpm = nil
           if pending_external_bpm
             new_bpm = pending_external_bpm
@@ -166,6 +224,9 @@ module MIDI
             ext = sync.external_bpm
             new_bpm = ext if ext > 0
             last_sync_time = loop_start
+          elsif (b = Clock.bpm) != last_clock_bpm
+            new_bpm = b
+            last_clock_bpm = b
           end
 
           if new_bpm && new_bpm > 20.0 && new_bpm < 300.0 && new_bpm != current_bpm
@@ -187,7 +248,7 @@ module MIDI
           while output && now >= next_clock_time
             clocks_to_send += 1
             next_clock_time += clock_interval_ms
-            if clocks_to_send >= 48
+            if clocks_to_send >= CLOCK_CATCH_UP
               next_clock_time = _uptime_ms + clock_interval_ms
               break
             end
@@ -242,9 +303,12 @@ module MIDI
 
     # BPM-based loop with automatic task switching and MIDI clock output
     # Use this instead of `loop do end` to ensure FreeRTOS task switching
-    # Sends MIDI clock at 24 PPQ when output device is provided
+    # Sends MIDI clock at 24 PPQ when output device is provided: with a
+    # port, by routing MIDI::Clock to it while the loop runs (the block then
+    # follows the clock's ticks), else from this loop.
     #
-    # @param bpm [Integer] Beats per minute (default: 120)
+    # @param bpm [Numeric, nil] Beats per minute. nil (the default) follows
+    #   MIDI::Clock's tempo; a number also sets it.
     # @param output [MIDI::Device, nil] MIDI output device for clock (optional)
     # @param subdivisions [Integer] Subdivisions per beat for block execution
     #   1 = quarter notes (every 24 clocks)
@@ -268,24 +332,90 @@ module MIDI
     #   MIDI.bpm_loop(120, output: device, subdivisions: 24) do |clock|
     #     player.tick(clock)
     #   end
-    def bpm_loop(bpm = 120, output: nil, subdivisions: 1, send_start: true, sync: false, input: nil, sync_from: nil, on_loop: nil, on_error: nil, bpm_source: nil)
+    def bpm_loop(bpm = nil, output: nil, subdivisions: 1, send_start: true, sync: false, input: nil, sync_from: nil, on_loop: nil, on_error: nil, bpm_source: nil)
       if sync_from
         sync = true
         input = ClockSource.new(sync_from)
       end
-      # Current BPM (may be updated by sync, bpm_source, or
-      # MIDI._notify_bpm_change)
-      current_bpm = bpm.to_f
-
-      # Calculate initial intervals
-      # Clock interval: 60000ms / BPM / 24 PPQ
-      clock_interval_ms = 60000.0 / current_bpm / PPQ
+      # Current BPM (may be updated by sync, bpm_source, the clock's tempo
+      # or MIDI._notify_bpm_change)
+      current_bpm = _loop_initial_bpm(bpm)
 
       # Block execution interval: every N clocks
       # For subdivisions=1 (quarter note): every 24 clocks
       # For subdivisions=2 (eighth note): every 12 clocks
       # For subdivisions=4 (sixteenth note): every 6 clocks
       clocks_per_subdivision = PPQ / subdivisions
+
+      attached = Clock._attach(output)
+      if attached
+        clocks_per_subdivision = 1 if clocks_per_subdivision < 1
+        Clock.start if send_start
+        begin
+          if bpm_source
+            b = bpm_source.call
+            Clock.bpm = b if b > 20.0 && b < 300.0
+          end
+          last_count = Clock._count
+          clock_count = 0
+          last_sync_time = _uptime_ms
+          last_source_bpm = nil
+          while true
+            loop_start = _uptime_ms
+            if bpm_source
+              begin
+                b = bpm_source.call
+                if b > 20.0 && b < 300.0 && b != last_source_bpm
+                  Clock.bpm = b
+                  last_source_bpm = b
+                end
+              rescue => e
+                # Disable bpm_source on error
+                bpm_source = nil
+              end
+            elsif sync && input && (loop_start - last_sync_time) > 200
+              ext_bpm = input.external_bpm
+              Clock.bpm = ext_bpm if ext_bpm > 20.0 && ext_bpm < 300.0
+              last_sync_time = loop_start
+            end
+
+            # Run the block for the clocks the clock sent since the last pass
+            now = Clock._count
+            ticks = (now - last_count) & CLOCK_COUNT_MASK
+            last_count = now
+            ticks = CLOCK_CATCH_UP if ticks > CLOCK_CATCH_UP
+            i = 0
+            while i < ticks
+              # Execute user block at subdivision boundaries
+              if block_given? && (clock_count % clocks_per_subdivision) == 0
+                yield clock_count
+              end
+              clock_count += 1
+              i += 1
+            end
+            process_all_inputs if ticks > 0
+
+            # Sleep until just past the next clock
+            _idle_ms(Clock._us_to_next / 1000 + 1)
+
+            # Execute on_loop callback if provided
+            begin
+              on_loop.call if on_loop
+            rescue Exception => e
+              on_error.call(e) if on_error
+            end
+
+            process_all_inputs
+          end
+        ensure
+          Clock._detach(output, attached)
+        end
+      end
+
+      # Calculate initial intervals
+      # Clock interval: 60000ms / BPM / 24 PPQ
+      clock_interval_ms = 60000.0 / current_bpm / PPQ
+      last_clock_bpm = Clock.bpm
 
       # Send MIDI Start if output provided
       if output && send_start
@@ -325,10 +455,17 @@ module MIDI
         # Record loop start time for accurate timing
         loop_start = _uptime_ms
 
-        # Apply pending BPM update from MIDI._notify_bpm_change first
+        # Apply pending BPM update from MIDI._notify_bpm_change, or a change
+        # of the clock's tempo, first
+        new_bpm = nil
         if pending_external_bpm
           new_bpm = pending_external_bpm
           pending_external_bpm = nil
+        elsif (b = Clock.bpm) != last_clock_bpm
+          new_bpm = b
+          last_clock_bpm = b
+        end
+        if new_bpm
           if new_bpm > 20.0 && new_bpm < 300.0 && new_bpm != current_bpm
             old_interval = clock_interval_ms
             current_bpm = new_bpm
@@ -376,7 +513,7 @@ module MIDI
           clocks_to_send += 1
           next_clock_time += clock_interval_ms
           # Limit catch-up to prevent infinite loop
-          if clocks_to_send >= 48
+          if clocks_to_send >= CLOCK_CATCH_UP
             # Too far behind - reset timing
             next_clock_time = _uptime_ms + clock_interval_ms
             break
@@ -452,6 +589,17 @@ module MIDI
       ensure
         off_bpm_change(bpm_change_handler) if bpm_change_handler
       end
+    end
+
+    # Internal: the BPM a loop starts at. A number also becomes the clock's
+    # tempo; nil (or anything out of range) takes the clock's.
+    def _loop_initial_bpm(bpm)
+      if (bpm.is_a?(Integer) || bpm.is_a?(Float)) && bpm > 20.0 && bpm < 300.0
+        Clock.bpm = bpm
+        return bpm.to_f
+      end
+      b = Clock.bpm
+      b > 20.0 && b < 300.0 ? b : 120.0
     end
 
     # Run a block for a specified duration with task switching

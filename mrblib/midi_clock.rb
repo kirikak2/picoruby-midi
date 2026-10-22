@@ -1,95 +1,190 @@
 # MIDI Clock
 #
-# Master clock generation and external clock sync
-# Uses high-precision hardware timer for accurate timing
+# The master clock: one per process, run in C by the platform port (an
+# esp_timer on ESP32). It is a MIDI device that only sends -- route it to
+# where the clock should go:
+#
+#   MIDI.route(MIDI::Clock, dev)   # Timing Clock (F8), 24 per quarter note
+#   MIDI::Clock.bpm = 128
+#   MIDI::Clock.start              # Start (FA) along the routes; .stop / .continue
+#
+# The F8s run whenever something is routed from the clock, started or not
+# (receivers follow the tempo while stopped); Start / Stop are messages of
+# their own. What the script does in between does not move the clock, so
+# any loop works with it: MIDI.start!, MIDI.bpm_loop, `loop do`, ...
+#
+# Without a port (no C clock) the class methods keep the tempo only, and
+# MIDI.start! / MIDI.bpm_loop send the clock from their own Ruby loop.
+#
+# MIDI::Clock.new(device) is the older interface: a handle on the same clock
+# that routes it to `device` between start and stop.
 
 module MIDI
   class Clock
     # Pulses Per Quarter Note (MIDI standard)
     PPQ = 24
 
-    # @param device [MIDI::Device, nil] MIDI device for clock output
+    class << self
+      # Whether the platform runs the clock in C
+      def hardware?
+        respond_to?(:_bit)
+      end
+
+      # Its bit in the transport registry (0 without a port)
+      def transport_id
+        hardware? ? _bit : 0
+      end
+
+      # @return [Float] the tempo the clock runs at
+      def bpm
+        hardware? ? _current_bpm : (@bpm || 120.0)
+      end
+
+      # Set the tempo (clamped to 20..300)
+      def bpm=(value)
+        value = value.to_f.clamp(20.0, 300.0)
+        if hardware?
+          _set_bpm(value)
+        else
+          @bpm = value
+        end
+      end
+
+      # MIDI Start (FA) along the routes; the next F8 is the downbeat
+      def start
+        _start if hardware?
+        nil
+      end
+
+      # MIDI Continue (FB) along the routes
+      def continue
+        _continue if hardware?
+        nil
+      end
+
+      # MIDI Stop (FC) along the routes (the F8s go on)
+      def stop
+        _stop if hardware?
+        nil
+      end
+
+      # Between start / continue and stop
+      def running?
+        hardware? ? _running? : false
+      end
+
+      # --- Transport (MIDI.route(MIDI::Clock, dev)) ---
+
+      # Nothing is sent to the clock
+      def send_packet(cable, cin, midi1, midi2, midi3)
+        0
+      end
+
+      def bytes_available
+        0
+      end
+
+      def read_available
+        nil
+      end
+
+      def connected?
+        transport_id != 0
+      end
+
+      def device_info
+        "MIDI clock"
+      end
+
+      # Internal: route the clock to `device` for a loop or a handle.
+      # @return [Symbol, nil] :added (this call routed it), :present (it
+      #   already was), or nil (it cannot be: no port, or `device` is not a
+      #   registered transport)
+      def _attach(device)
+        return nil unless device && hardware?
+        src = transport_id
+        dst = MIDI.route_bit(device)
+        return nil if src == 0 || dst == 0
+        return :present if (MIDI._route_targets_of(src) & dst) != 0
+        return nil if MIDI._route_add(src, dst, MIDI::ROUTE_ALL_CHANNELS) != 0
+        :added
+      end
+
+      # Internal: undo _attach (only the route it added)
+      def _detach(device, attached)
+        return unless attached == :added
+        MIDI._route_remove(transport_id, MIDI.route_bit(device))
+      end
+    end
+
+    # @param device [MIDI::Device, nil] where start / stop route the clock
     def initialize(device = nil)
       @device = device
-      @bpm = 120.0
+      @attached = nil
       @running = false
 
       # External clock tracking
       @external_timestamps = []
       @external_bpm = nil
       @last_external_time = 0
-
-      # Initialize hardware timer if available
-      _init_timer if respond_to?(:_init_timer)
     end
 
-    attr_reader :running
-
-    # Get current BPM
+    # @return [Float] the clock's tempo
     def bpm
-      @bpm
+      Clock.bpm
     end
 
-    # Set BPM (clamps to valid range)
+    # Set the clock's tempo
     # @param new_bpm [Float] BPM value (20.0 - 300.0)
     def bpm=(new_bpm)
-      @bpm = new_bpm.to_f.clamp(20.0, 300.0)
-      _update_timer_period if respond_to?(:_update_timer_period)
+      Clock.bpm = new_bpm
     end
 
-    # Start master clock
-    # Sends MIDI Start message and begins clock generation
+    # Route the clock to the device and send MIDI Start (unless the clock
+    # is running already, for other devices too)
     def start
       return if @running
-
-      @running = true
-      @device&.send_start
-
-      if respond_to?(:_start_timer)
-        _start_timer
+      _attach
+      if Clock.hardware?
+        Clock.start unless Clock.running?
+      else
+        @device&.send_start
       end
     end
 
-    # Stop master clock
-    # Sends MIDI Stop message and stops clock generation
+    # Send MIDI Stop and stop routing the clock to the device
     def stop
       return unless @running
-
-      @running = false
-      @device&.send_stop
-
-      if respond_to?(:_stop_timer)
-        _stop_timer
+      if Clock.hardware?
+        Clock.stop
+      else
+        @device&.send_stop
       end
+      Clock._detach(@device, @attached)
+      @attached = nil
+      @running = false
     end
 
-    # Continue master clock
-    # Sends MIDI Continue message and resumes clock generation
+    # Route the clock to the device and send MIDI Continue
     def continue
       return if @running
-
-      @running = true
-      @device&.send_continue
-
-      if respond_to?(:_start_timer)
-        _start_timer
+      _attach
+      if Clock.hardware?
+        Clock.continue unless Clock.running?
+      else
+        @device&.send_continue
       end
     end
 
-    # Check if clock is running
-    # Uses hardware timer state for accurate status (handles stop_requested)
+    # Between start and stop (false once the clock was stopped elsewhere,
+    # e.g. by the end-of-script cleanup)
     def running?
-      if respond_to?(:_timer_running?)
-        # Get actual timer state from C (may be stopped by stop_requested)
-        timer_running = _timer_running?
-        # Sync Ruby state if C stopped the timer
-        if @running && !timer_running
-          @running = false
-        end
-        timer_running
-      else
-        @running
-      end
+      return false unless @running
+      Clock.hardware? ? Clock.running? : true
+    end
+
+    def running
+      running?
     end
 
     # --- External Clock Sync ---
@@ -140,7 +235,7 @@ module MIDI
       @external_bpm
     end
 
-    # Sync internal BPM to external clock
+    # Sync the clock's tempo to the external clock
     # @return [Boolean] true if synced, false if no external BPM available
     def sync_to_external
       if @external_bpm && @external_bpm > 0
@@ -159,6 +254,11 @@ module MIDI
     end
 
     private
+
+    def _attach
+      @running = true
+      @attached ||= Clock._attach(@device)
+    end
 
     # Get current time in microseconds
     # Note: mrubyc doesn't have 'defined?' keyword

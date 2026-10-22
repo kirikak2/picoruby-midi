@@ -79,6 +79,23 @@ sends messages on unfiltered (`overflow: :bypass`, default) or drops them
 (`overflow: :drop`). `MIDI::NoteMap` keeps note offs in step with note ons
 through a filter that changes notes differently each time.
 
+### The MIDI clock
+
+`MIDI::Clock` is the master clock: one per process, run in C by the port
+(an esp_timer on ESP32), and a MIDI device that only sends. Route it to
+where the clock should go:
+
+```ruby
+MIDI.route(MIDI::Clock, synth)   # Timing Clock (F8), 24 per quarter note
+MIDI::Clock.bpm = 128
+MIDI::Clock.start                # Start (FA) along the routes; .stop / .continue
+```
+
+The F8s run while something is routed from the clock, started or not;
+Start / Stop are messages of their own. The script's loop does not move
+the clock, so any loop works with it (`MIDI.start!`, `MIDI.bpm_loop`,
+`loop do ... MIDI.sleep_ms ... end`, ...).
+
 ### BPM-synced loop
 
 `MIDI.start!` runs the clock + dispatches MIDI Input events + invokes
@@ -92,6 +109,12 @@ MIDI.start!(bpm: 120, output: device, subdivisions: 4) do |clock|
   device.note_on(60 + (beat % 8), 100)
 end
 ```
+
+With a port and an `output:` that is a registered transport, the loop
+routes `MIDI::Clock` to `output` while it runs (a route that was already
+there stays) and the block follows the clock's ticks; otherwise the loop
+sends the clock itself. A `bpm:` sets the clock's tempo; without one the
+loop runs at the clock's current tempo.
 
 External BPM source (e.g. an incoming clock from another device) can be
 fed in by hooking `MIDI.on_bpm_change`:
@@ -133,8 +156,10 @@ MIDI.on_bpm_change { |new_bpm| puts "BPM is now #{new_bpm}" }
   clock arriving on a source (USB host, UART, USB device).
 - `MIDI.run_filters(max = 64)` - Run queued filter work (for loops of your own).
 - `MIDI.filter_stats` - `{ overflows: }`.
-- `MIDI.bpm_loop(...)` - Legacy version of `start!`. Kept for now;
-  prefer `start!`.
+- `MIDI.bpm_loop(bpm = nil, output:, ...)` - Legacy version of `start!`.
+  Kept for now; prefer `start!`. Like `start!`, an omitted `bpm` follows
+  `MIDI::Clock`, and `output:` routes the clock rather than sending it
+  from Ruby when it can.
 
 ### `MIDI::Device`
 
@@ -181,8 +206,21 @@ What filters and listeners get: `type`, `channel`, `note` / `velocity`,
 
 ### `MIDI::Clock`
 
-- `MIDI::Clock.new(device = nil)`
-- `bpm`, `bpm=(new_bpm)`
+The clock (class methods; one per process):
+
+- `MIDI.route(MIDI::Clock, dev)` / `MIDI.unroute(MIDI::Clock, dev)` -
+  Where the clock goes (`transport_id` is its registry bit; 0 without a port)
+- `MIDI::Clock.bpm`, `MIDI::Clock.bpm = value` (20..300)
+- `MIDI::Clock.start` / `.continue` / `.stop` / `.running?` - Start (FA),
+  Continue (FB), Stop (FC) along its routes. The F8s go on either way.
+- `MIDI::Clock.hardware?` - Whether the port runs it in C
+
+The older handle (same clock):
+
+- `MIDI::Clock.new(device = nil)` / `MIDI.clock(device)` - `start` routes the
+  clock to `device` and sends Start (unless the clock is running already),
+  `stop` sends Stop and removes that route
+- `bpm`, `bpm=(new_bpm)` - The clock's tempo
 - `start` / `stop` / `continue` / `running?`
 - `receive_clock` / `receive_start` / `receive_stop` - Feed in external
   clock bytes for sync.
@@ -202,12 +240,13 @@ ports:
 
 - `src/midi_parser.c` - Byte/packet parser, SysEx accumulator
 - `src/midi_scheduler.c` - Note off scheduler (driven by `tick(now_us)`)
-- `src/midi_clock_gen.c` - Clock generator (driven by `tick(now_us)`)
+- `src/midi_clock_gen.c` - Clock generator (driven by `tick(now_us)`;
+  the ESP32 port keeps only its tempo and drives the clock from its timer)
 - `src/midi_transport_registry.c` - Transport registry: one bit of the
   transport mask per transport
 - `src/midi_route.c` - Route table for `MIDI.route`
-- `ports/esp32/midi.c` - ESP32 port: esp_timer-driven clock, FreeRTOS
-  input task
+- `ports/esp32/midi.c` - ESP32 port: the clock (an esp_timer; a transport
+  and route source of its own), FreeRTOS input task
 
 Transports plug in via the `midi_transport_t` interface
 (`include/midi_transport.h`); per-transport gems implement it and

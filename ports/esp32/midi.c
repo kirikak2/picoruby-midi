@@ -21,31 +21,19 @@
 #include "../../../picoruby-usb_midi_device/include/usb_midi_device.h"
 #include "../../../picoruby-uart_midi/include/uart_midi.h"
 
-/* Application-supplied cooperative-stop hooks. Both default to NULL,
- * meaning "never stop on app request, no cleanup to run". The host
- * application registers these via MIDI_set_stop_check() /
- * MIDI_set_cleanup_hook() at init time. */
+/* Application-supplied cooperative-stop check. Defaults to NULL, meaning
+ * "never stop on app request". The host application registers it via
+ * MIDI_set_stop_check() at init time. */
 static midi_stop_check_fn g_stop_check_fn = NULL;
-static midi_cleanup_fn    g_cleanup_fn    = NULL;
 
 void MIDI_set_stop_check(midi_stop_check_fn fn)
 {
     g_stop_check_fn = fn;
 }
 
-void MIDI_set_cleanup_hook(midi_cleanup_fn fn)
-{
-    g_cleanup_fn = fn;
-}
-
 static inline bool midi_stop_requested(void)
 {
     return g_stop_check_fn ? g_stop_check_fn() : false;
-}
-
-static inline void midi_run_cleanup(void)
-{
-    if (g_cleanup_fn) g_cleanup_fn();
 }
 
 static const char *TAG = "MIDI_CLOCK";
@@ -198,35 +186,108 @@ static void register_builtin_transports(void)
     MIDI_transport_register_at(MIDI_TRANSPORT_USB_DEVICE, &g_usbdev_transport);
 }
 
-/* Timer handle for the periodic 24 PPQ tick */
-static esp_timer_handle_t g_clock_timer = NULL;
+/* ========================================
+ * The MIDI clock (one per process)
+ *
+ * A send-only transport of its own, and a route source that pushes its
+ * output: MIDI.route(MIDI::Clock, dev) sends its clock to dev. An esp_timer
+ * fires 24 times per quarter note from MIDI_Clock_init() on, and each tick
+ * sends Timing Clock (F8) along the routes from the clock -- only while
+ * there is one -- through MIDI_route_dispatch(), so filters and listeners on
+ * it work too. Start / Continue / Stop go the same way; they do not stop the
+ * F8s (receivers follow the tempo while stopped). The ticks are counted for
+ * loops that run in step with the clock (MIDI.bpm_loop with output:).
+ *
+ * The tempo is the BPM set with MIDI_Clock_set_bpm(), or the one given to
+ * MIDI_Clock_set_follow_bpm() while that is non-zero (an application
+ * following an external clock).
+ * ======================================== */
 
-/* Send callback registered with the clock_gen core: emits a single
- * Timing Clock byte (0xF8) over the USB-MIDI transport. */
-static void clock_send_byte(void)
+static esp_timer_handle_t g_clock_timer = NULL;
+static uint8_t g_clock_bit;
+static float g_clock_follow_bpm;              /* 0: not following */
+static uint64_t g_clock_period_us;            /* Period the timer runs at */
+static volatile bool g_clock_running;         /* Between Start and Stop */
+static volatile uint32_t g_clock_count;       /* Ticks since init */
+static volatile uint32_t g_clock_last_tick_us; /* Low 32 bits of the last tick's time */
+static midi_clock_callback_t g_clock_user_cb;
+
+static int clock_tx_send_packet(void *ctx, uint8_t cable, uint8_t cin,
+                                uint8_t b1, uint8_t b2, uint8_t b3)
 {
-    g_usb_transport.ops->send_packet(g_usb_transport.ctx, 0,
-                                     USB_MIDI_HOST_CIN_SINGLE_BYTE,
-                                     MIDI_STATUS_TIMING_CLOCK, 0, 0);
+    (void)ctx; (void)cable; (void)cin; (void)b1; (void)b2; (void)b3;
+    return 0;  /* Nothing is sent to the clock */
 }
 
-/* Timer callback (called from esp_timer task context) */
+static bool clock_tx_is_connected(void *ctx)
+{
+    (void)ctx;
+    return true;
+}
+
+static const midi_transport_ops_t g_clock_tx_ops = {
+    .send_packet     = clock_tx_send_packet,
+    .read_bytes      = NULL,
+    .bytes_available = NULL,
+    .is_connected    = clock_tx_is_connected,
+    .transport_id    = MIDI_TRANSPORT_ID_NONE,
+};
+
+/* Const for the same reason as g_usb_transport. */
+static const midi_transport_t g_clock_transport = {
+    .ops = &g_clock_tx_ops,
+    .ctx = NULL,
+};
+
+/* After the built-ins (constructor priority is not needed: the registry is
+ * plain static data), so the clock takes the first dynamic bit. */
+__attribute__((constructor))
+static void register_clock_transport(void)
+{
+    g_clock_bit = MIDI_transport_register(&g_clock_transport);
+    if (g_clock_bit) MIDI_route_set_source(g_clock_bit, true);
+}
+
+static void clock_send(uint8_t status)
+{
+    uint8_t bit = g_clock_bit;
+    if (!bit) return;
+    uint8_t dst = MIDI_route_targets(bit, USB_MIDI_HOST_CIN_SINGLE_BYTE, status);
+    MIDI_route_dispatch(bit, dst, USB_MIDI_HOST_CIN_SINGLE_BYTE, status, 0, 0);
+}
+
+/* esp_timer task */
 static void clock_timer_callback(void *arg)
 {
-    if (!midi_clock_gen_is_running()) {
-        return;
-    }
+    (void)arg;
+    g_clock_last_tick_us = (uint32_t)esp_timer_get_time();
+    g_clock_count++;
+    if (MIDI_route_from(g_clock_bit)) clock_send(MIDI_STATUS_TIMING_CLOCK);
+    midi_clock_callback_t cb = g_clock_user_cb;
+    if (cb) cb();
+}
 
-    /* Check if the application has requested a stop - run cleanup and halt */
-    if (midi_stop_requested()) {
-        ESP_LOGI(TAG, "Stop requested, performing cleanup...");
-        midi_run_cleanup();
-        midi_clock_gen_stop();
-        esp_timer_stop(g_clock_timer);
-        return;
-    }
+static float clock_current_bpm(void)
+{
+    float follow = g_clock_follow_bpm;
+    return follow > 0.0f ? follow : midi_clock_gen_get_bpm();
+}
 
-    midi_clock_gen_tick((uint64_t)esp_timer_get_time());
+static uint64_t clock_period_us(float bpm)
+{
+    if (bpm < 20.0f) bpm = 20.0f;
+    if (bpm > 300.0f) bpm = 300.0f;
+    return (uint64_t)(60000000.0f / (bpm * 24.0f));
+}
+
+/* Run the timer at the current tempo's period (from now on when it changed). */
+static void clock_retime(void)
+{
+    if (g_clock_timer == NULL) return;
+    uint64_t period = clock_period_us(clock_current_bpm());
+    if (period == g_clock_period_us) return;
+    g_clock_period_us = period;
+    esp_timer_restart(g_clock_timer, period);
 }
 
 int MIDI_Clock_init(void)
@@ -234,9 +295,6 @@ int MIDI_Clock_init(void)
     if (g_clock_timer != NULL) {
         return 0;  /* Already initialized */
     }
-
-    midi_clock_gen_init();
-    midi_clock_gen_set_send_callback(clock_send_byte);
 
     esp_timer_create_args_t timer_args = {
         .callback = clock_timer_callback,
@@ -249,11 +307,15 @@ int MIDI_Clock_init(void)
     esp_err_t ret = esp_timer_create(&timer_args, &g_clock_timer);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create timer: %d", ret);
+        g_clock_timer = NULL;
         return -1;
     }
+    g_clock_period_us = clock_period_us(clock_current_bpm());
+    g_clock_last_tick_us = (uint32_t)esp_timer_get_time();
+    esp_timer_start_periodic(g_clock_timer, g_clock_period_us);
 
-    ESP_LOGI(TAG, "Clock timer initialized, BPM=%.1f, period=%llu us",
-             midi_clock_gen_get_bpm(), midi_clock_gen_get_period_us());
+    ESP_LOGI(TAG, "Clock initialized, BPM=%.1f, period=%llu us",
+             clock_current_bpm(), g_clock_period_us);
 
     return 0;
 }
@@ -261,66 +323,90 @@ int MIDI_Clock_init(void)
 void MIDI_Clock_deinit(void)
 {
     if (g_clock_timer != NULL) {
-        if (midi_clock_gen_is_running()) {
-            MIDI_Clock_stop();
-        }
+        esp_timer_stop(g_clock_timer);
         esp_timer_delete(g_clock_timer);
         g_clock_timer = NULL;
     }
-    midi_clock_gen_deinit();
+    g_clock_period_us = 0;
+    g_clock_running = false;
+}
+
+uint8_t MIDI_Clock_bit(void)
+{
+    return g_clock_bit;
 }
 
 void MIDI_Clock_set_bpm(float bpm)
 {
     midi_clock_gen_set_bpm(bpm);
-    uint64_t period = midi_clock_gen_get_period_us();
+    clock_retime();
+}
 
-    if (midi_clock_gen_is_running() && g_clock_timer != NULL) {
-        /* Restart hardware timer with the new period */
-        esp_timer_stop(g_clock_timer);
-        esp_timer_start_periodic(g_clock_timer, period);
-    }
+float MIDI_Clock_get_bpm(void)
+{
+    return midi_clock_gen_get_bpm();
+}
 
-    ESP_LOGD(TAG, "BPM set to %.1f, period=%llu us",
-             midi_clock_gen_get_bpm(), period);
+void MIDI_Clock_set_follow_bpm(float bpm)
+{
+    g_clock_follow_bpm = bpm > 0.0f ? bpm : 0.0f;
+    clock_retime();
+}
+
+float MIDI_Clock_current_bpm(void)
+{
+    return clock_current_bpm();
 }
 
 void MIDI_Clock_start(void)
 {
-    if (g_clock_timer == NULL) {
-        if (MIDI_Clock_init() != 0) {
-            return;
-        }
-    }
+    if (MIDI_Clock_init() != 0) return;
+    g_clock_running = true;
+    clock_send(MIDI_STATUS_START);
+    /* The first clock after Start marks the downbeat: start the period afresh */
+    esp_timer_restart(g_clock_timer, g_clock_period_us);
+    g_clock_last_tick_us = (uint32_t)esp_timer_get_time();
+}
 
-    if (midi_clock_gen_is_running()) {
-        return;
-    }
-
-    midi_clock_gen_start((uint64_t)esp_timer_get_time());
-    esp_timer_start_periodic(g_clock_timer, midi_clock_gen_get_period_us());
-    ESP_LOGI(TAG, "Clock started at %.1f BPM", midi_clock_gen_get_bpm());
+void MIDI_Clock_continue(void)
+{
+    if (MIDI_Clock_init() != 0) return;
+    g_clock_running = true;
+    clock_send(MIDI_STATUS_CONTINUE);
 }
 
 void MIDI_Clock_stop(void)
 {
-    if (!midi_clock_gen_is_running() || g_clock_timer == NULL) {
-        return;
-    }
+    g_clock_running = false;
+    clock_send(MIDI_STATUS_STOP);
+}
 
-    esp_timer_stop(g_clock_timer);
-    midi_clock_gen_stop();
-    ESP_LOGI(TAG, "Clock stopped");
+void MIDI_Clock_reset(void)
+{
+    g_clock_running = false;
 }
 
 bool MIDI_Clock_is_running(void)
 {
-    return midi_clock_gen_is_running();
+    return g_clock_running;
+}
+
+uint32_t MIDI_Clock_count(void)
+{
+    return g_clock_count;
+}
+
+uint32_t MIDI_Clock_us_to_next(void)
+{
+    if (g_clock_timer == NULL) return 0;
+    uint32_t elapsed = (uint32_t)esp_timer_get_time() - g_clock_last_tick_us;
+    uint32_t period = (uint32_t)g_clock_period_us;
+    return elapsed >= period ? 0 : period - elapsed;
 }
 
 void MIDI_Clock_set_callback(midi_clock_callback_t callback)
 {
-    midi_clock_gen_set_user_callback(callback);
+    g_clock_user_cb = callback;
 }
 
 /* ========================================

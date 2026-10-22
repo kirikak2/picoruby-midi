@@ -1,5 +1,5 @@
 /*
- * PicoRuby MIDI - mrubyc bindings for Clock timer
+ * PicoRuby MIDI - mrubyc bindings
  */
 
 #include <mrubyc.h>
@@ -10,60 +10,92 @@
 #include "../../include/midi_transport.h"
 
 /*
- * MIDI::Clock._init_timer
+ * MIDI::Clock (class methods: the one clock of the process)
  */
+
+/* Counts are cut to 30 bits so they stay Integers on every VM */
+#define CLOCK_COUNT_MASK 0x3FFFFFFF
+
+/* MIDI::Clock._bit -> its transport bit (starts the timer) */
 static void
-c_midi_clock_init_timer(mrbc_vm *vm, mrbc_value v[], int argc)
+c_midi_clock_bit(mrbc_vm *vm, mrbc_value v[], int argc)
 {
-    int ret = MIDI_Clock_init();
-    SET_INT_RETURN(ret);
+    if (MIDI_Clock_init() != 0) {
+        SET_INT_RETURN(0);
+        return;
+    }
+    SET_INT_RETURN(MIDI_Clock_bit());
 }
 
-/*
- * MIDI::Clock._start_timer
- */
 static void
-c_midi_clock_start_timer(mrbc_vm *vm, mrbc_value v[], int argc)
+c_midi_clock_set_bpm(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc < 1) {
+        mrbc_raise(vm, MRBC_CLASS(ArgumentError), "wrong number of arguments");
+        return;
+    }
+    if (v[1].tt == MRBC_TT_FLOAT) {
+        MIDI_Clock_set_bpm((float)v[1].d);
+    } else if (v[1].tt == MRBC_TT_INTEGER) {
+        MIDI_Clock_set_bpm((float)v[1].i);
+    } else {
+        mrbc_raise(vm, MRBC_CLASS(TypeError), "BPM must be a number");
+        return;
+    }
+    SET_NIL_RETURN();
+}
+
+static void
+c_midi_clock_get_bpm(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_FLOAT_RETURN(MIDI_Clock_get_bpm());
+}
+
+static void
+c_midi_clock_current_bpm(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_FLOAT_RETURN(MIDI_Clock_current_bpm());
+}
+
+static void
+c_midi_clock_start(mrbc_vm *vm, mrbc_value v[], int argc)
 {
     MIDI_Clock_start();
     SET_NIL_RETURN();
 }
 
-/*
- * MIDI::Clock._stop_timer
- */
 static void
-c_midi_clock_stop_timer(mrbc_vm *vm, mrbc_value v[], int argc)
+c_midi_clock_continue(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    MIDI_Clock_continue();
+    SET_NIL_RETURN();
+}
+
+static void
+c_midi_clock_stop(mrbc_vm *vm, mrbc_value v[], int argc)
 {
     MIDI_Clock_stop();
     SET_NIL_RETURN();
 }
 
-/*
- * MIDI::Clock._update_timer_period
- */
 static void
-c_midi_clock_update_period(mrbc_vm *vm, mrbc_value v[], int argc)
-{
-    mrbc_value self = v[0];
-    mrbc_value bpm_val = mrbc_instance_getiv(&self, mrbc_str_to_symid("bpm"));
-
-    if (bpm_val.tt == MRBC_TT_FLOAT) {
-        MIDI_Clock_set_bpm((float)bpm_val.d);
-    } else if (bpm_val.tt == MRBC_TT_INTEGER) {
-        MIDI_Clock_set_bpm((float)bpm_val.i);
-    }
-
-    SET_NIL_RETURN();
-}
-
-/*
- * MIDI::Clock._timer_running?
- */
-static void
-c_midi_clock_timer_running(mrbc_vm *vm, mrbc_value v[], int argc)
+c_midi_clock_running(mrbc_vm *vm, mrbc_value v[], int argc)
 {
     SET_BOOL_RETURN(MIDI_Clock_is_running());
+}
+
+/* MIDI::Clock._count -> ticks so far (30 bits, wraps) */
+static void
+c_midi_clock_count(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN((mrbc_int_t)(MIDI_Clock_count() & CLOCK_COUNT_MASK));
+}
+
+/* MIDI::Clock._us_to_next -> microseconds until the next tick */
+static void
+c_midi_clock_us_to_next(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    SET_INT_RETURN((mrbc_int_t)MIDI_Clock_us_to_next());
 }
 
 /*
@@ -759,12 +791,17 @@ mrbc_midi_init(mrbc_vm *vm)
     /* Define Clock class under MIDI */
     mrbc_class *class_Clock = mrbc_define_class_under(vm, module_MIDI, "Clock", mrbc_class_object);
 
-    /* Clock timer methods */
-    mrbc_define_method(vm, class_Clock, "_init_timer", c_midi_clock_init_timer);
-    mrbc_define_method(vm, class_Clock, "_start_timer", c_midi_clock_start_timer);
-    mrbc_define_method(vm, class_Clock, "_stop_timer", c_midi_clock_stop_timer);
-    mrbc_define_method(vm, class_Clock, "_update_timer_period", c_midi_clock_update_period);
-    mrbc_define_method(vm, class_Clock, "_timer_running?", c_midi_clock_timer_running);
+    /* The clock (mruby/c does not tell class methods from instance ones) */
+    mrbc_define_method(vm, class_Clock, "_bit", c_midi_clock_bit);
+    mrbc_define_method(vm, class_Clock, "_set_bpm", c_midi_clock_set_bpm);
+    mrbc_define_method(vm, class_Clock, "_bpm", c_midi_clock_get_bpm);
+    mrbc_define_method(vm, class_Clock, "_current_bpm", c_midi_clock_current_bpm);
+    mrbc_define_method(vm, class_Clock, "_start", c_midi_clock_start);
+    mrbc_define_method(vm, class_Clock, "_continue", c_midi_clock_continue);
+    mrbc_define_method(vm, class_Clock, "_stop", c_midi_clock_stop);
+    mrbc_define_method(vm, class_Clock, "_running?", c_midi_clock_running);
+    mrbc_define_method(vm, class_Clock, "_count", c_midi_clock_count);
+    mrbc_define_method(vm, class_Clock, "_us_to_next", c_midi_clock_us_to_next);
 
     /* Define Input class under MIDI */
     mrbc_class *class_Input = mrbc_define_class_under(vm, module_MIDI, "Input", mrbc_class_object);
