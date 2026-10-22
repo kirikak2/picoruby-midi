@@ -27,6 +27,7 @@ static midi_filter_t g_filters[MIDI_FILTER_MAX];
 static volatile uint8_t g_extra_sources;
 static midi_filter_sink_t g_filter_sink;
 static volatile uint32_t g_filter_overflows;
+static volatile uint8_t g_watch[2];   /* MIDI_WATCH_APP / MIDI_WATCH_SCRIPT */
 
 static bool single_bit(uint8_t b)
 {
@@ -83,6 +84,18 @@ void MIDI_route_clear(void)
     for (int i = 0; i < MIDI_FILTER_MAX; i++) {
         g_filters[i].src = 0;
     }
+    g_watch[MIDI_WATCH_SCRIPT] = 0;
+}
+
+void MIDI_route_set_watch(int owner, uint8_t src_mask)
+{
+    if (owner != MIDI_WATCH_APP && owner != MIDI_WATCH_SCRIPT) return;
+    g_watch[owner] = src_mask;
+}
+
+uint8_t MIDI_route_watched(void)
+{
+    return (uint8_t)(g_watch[MIDI_WATCH_APP] | g_watch[MIDI_WATCH_SCRIPT]);
 }
 
 bool MIDI_route_active(void)
@@ -93,7 +106,7 @@ bool MIDI_route_active(void)
     for (int i = 0; i < MIDI_FILTER_MAX; i++) {
         if (g_filters[i].src != 0) return true;
     }
-    return false;
+    return MIDI_route_watched() != 0;
 }
 
 bool MIDI_route_from(uint8_t src_bit)
@@ -104,7 +117,7 @@ bool MIDI_route_from(uint8_t src_bit)
     for (int i = 0; i < MIDI_FILTER_MAX; i++) {
         if (g_filters[i].src == src_bit) return true;
     }
-    return false;
+    return (MIDI_route_watched() & src_bit) != 0;
 }
 
 bool MIDI_route_get(int i, uint8_t *src_bit, uint8_t *dst_mask, int *channel)

@@ -4,7 +4,7 @@
 #
 #   ruby host_test/filter_test.rb
 #   cat host_test/filter_stubs.rb mrblib/midi_filter.rb mrblib/midi_route.rb \
-#       host_test/filter_test.rb | RBENV_VERSION=mruby-3.2.0 mruby
+#       mrblib/midi_input.rb host_test/filter_test.rb | RBENV_VERSION=mruby-3.2.0 mruby
 #
 # (run from the gem directory; mruby has no `load`)
 
@@ -13,6 +13,7 @@ unless Object.const_defined?(:MIDI) && MIDI.const_defined?(:Message)
   load File.join(dir, "host_test/filter_stubs.rb")
   load File.join(dir, "mrblib/midi_filter.rb")
   load File.join(dir, "mrblib/midi_route.rb")
+  load File.join(dir, "mrblib/midi_input.rb")
 end
 
 $passed = 0
@@ -204,6 +205,17 @@ MIDI.on(HOST) { |x| x }
 MIDI.unroute(HOST, AMY)
 check "unroute drops filter", false, $stub[:filters].key?([0x01, 0x08])
 check "unroute keeps listener", true, $stub[:filters].key?([0x01, MIDI::DST_RUBY])
+
+# --- sync_from: reads the source --------------------------------------------------
+
+reset
+MIDI::ClockSource.new(UART)
+check "sync_from watches", 0x02, $stub[:watch]
+check "sync_from starts reading", 1, $stub[:started]
+check "external bpm via source", 120.0, MIDI::ClockSource.new(HOST).external_bpm
+check "watches add up", 0x03, $stub[:watch]
+MIDI::ClockSource.new(AMY)                            # not a source: no watch
+check "non-source not watched", 0x03, $stub[:watch]
 
 # --- NoteMap ---------------------------------------------------------------------
 

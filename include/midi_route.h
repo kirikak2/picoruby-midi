@@ -49,11 +49,11 @@ int MIDI_route_add(uint8_t src_bit, uint8_t dst_mask, int channel);
  * dropped. Returns how many routes were dropped. */
 int MIDI_route_remove(uint8_t src_bit, uint8_t dst_mask);
 
-/* Drop every route and every filter. */
+/* Drop every route and every filter, and the script's watches (below). */
 void MIDI_route_clear(void);
 
-/* Whether any route or filter is set (the input task keeps running while
- * one is). */
+/* Whether any route, filter or watch is set (the input task keeps running
+ * while one is). */
 bool MIDI_route_active(void);
 
 /* The transports a packet from `src_bit` would be forwarded to (0 for
@@ -61,7 +61,7 @@ bool MIDI_route_active(void);
  * into one MIDI_transport_send() with destinations of its own. */
 uint8_t MIDI_route_targets(uint8_t src_bit, uint8_t cin, uint8_t b1);
 
-/* Whether any route or filter starts from `src_bit`. */
+/* Whether any route, filter or watch starts from `src_bit`. */
 bool MIDI_route_from(uint8_t src_bit);
 
 /* Built-in route sources: the transports the input task reads (USB host
@@ -82,6 +82,20 @@ uint8_t MIDI_route_sources(void);
  * message bytes. Filters apply (see below). */
 void MIDI_route_packet(uint8_t src_bit, uint8_t cin,
                        uint8_t b1, uint8_t b2, uint8_t b3);
+
+/*
+ * Watches: sources to read with nothing routed from them, for what reading
+ * them measures -- the external clock tempo (MIDI.external_bpm). Without a
+ * route, filter or watch the input task does not read the USB device or the
+ * UART at all. Two owners, so neither undoes the other: the application (the
+ * Tempo screen) and the script (sync_from:); MIDI_route_clear() drops the
+ * script's only. Callers start reading with MIDI_route_start_source().
+ */
+#define MIDI_WATCH_APP    0
+#define MIDI_WATCH_SCRIPT 1
+
+void    MIDI_route_set_watch(int owner, uint8_t src_mask);
+uint8_t MIDI_route_watched(void);
 
 /* Read route `i` (0..MIDI_ROUTE_MAX-1). Returns false for an unused slot. */
 bool MIDI_route_get(int i, uint8_t *src_bit, uint8_t *dst_mask, int *channel);

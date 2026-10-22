@@ -470,10 +470,18 @@ module MIDI
   end
 
   # The external clock of a route source, for sync: / input: of the clock
-  # loops (what sync_from: wraps its argument in).
+  # loops (what sync_from: wraps its argument in). A source with nothing
+  # routed from it is not read at all, so this asks for it to be read (a
+  # watch, until the script ends).
   class ClockSource
     def initialize(from)
       @from = from
+      bit = MIDI.route_bit(from)
+      if bit != 0 && (bit & MIDI._route_sources) != 0
+        $__midi_watch__ = ($__midi_watch__ || 0) | bit
+        MIDI._route_watch($__midi_watch__)
+        MIDI._start_source(from, bit)
+      end
     end
 
     def external_bpm

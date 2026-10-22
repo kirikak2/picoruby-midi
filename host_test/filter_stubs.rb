@@ -43,6 +43,7 @@ module MIDI
       $stub[:sent] << [mask, cin, b1, b2, b3]
     end
 
+    def _route_watch(mask); $stub[:watch] = mask; end
     def _filter_init; 0; end
 
     def _filter_set(src, dst, types, ch, overflow)

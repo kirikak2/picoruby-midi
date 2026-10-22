@@ -173,6 +173,16 @@ mrb_midi_transport_connected(mrb_state *mrb, mrb_value self)
     return mrb_bool_value(t && t->ops && t->ops->is_connected && t->ops->is_connected(t->ctx));
 }
 
+/* MIDI._route_watch(src_mask): the script's watches (read with nothing routed) */
+static mrb_value
+mrb_midi_route_watch(mrb_state *mrb, mrb_value self)
+{
+    mrb_int mask;
+    mrb_get_args(mrb, "i", &mask);
+    MIDI_route_set_watch(MIDI_WATCH_SCRIPT, (uint8_t)mask);
+    return mrb_nil_value();
+}
+
 /* MIDI._transport_send(mask, cin, b1, b2, b3) */
 static mrb_value
 mrb_midi_transport_send(mrb_state *mrb, mrb_value self)
@@ -599,6 +609,8 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
                                   mrb_midi_route_targets_of, MRB_ARGS_REQ(1));
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_transport_send),
                                   mrb_midi_transport_send, MRB_ARGS_REQ(5));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_watch),
+                                  mrb_midi_route_watch, MRB_ARGS_REQ(1));
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_get),
                                   mrb_midi_route_get, MRB_ARGS_REQ(1));
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_filtered),

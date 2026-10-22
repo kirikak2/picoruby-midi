@@ -237,6 +237,23 @@ int main(void)
     MIDI_route_clear();
     MIDI_route_set_filter_sink(NULL);
 
+    printf("watch\n");
+    EXPECT_EQ(MIDI_route_active(), 0);
+    MIDI_route_set_watch(MIDI_WATCH_APP, 0x04);
+    MIDI_route_set_watch(MIDI_WATCH_SCRIPT, 0x02);
+    MIDI_route_set_watch(5, 0x01);                    /* no such owner: ignored */
+    EXPECT_EQ(MIDI_route_watched(), 0x06);
+    EXPECT_EQ(MIDI_route_from(0x04), 1);
+    EXPECT_EQ(MIDI_route_from(0x02), 1);
+    EXPECT_EQ(MIDI_route_from(0x01), 0);
+    EXPECT_EQ(MIDI_route_active(), 1);
+    MIDI_route_packet(0x04, 0xF, 0xF8, 0, 0);         /* watched, not routed: sent nowhere */
+    for (int i = 0; i < 8; i++) EXPECT_EQ(g_hits[i], 0);
+    MIDI_route_clear();                               /* the script's go, the app's stay */
+    EXPECT_EQ(MIDI_route_watched(), 0x04);
+    MIDI_route_set_watch(MIDI_WATCH_APP, 0);
+    EXPECT_EQ(MIDI_route_active(), 0);
+
     printf("all route tests passed\n");
     return 0;
 }
