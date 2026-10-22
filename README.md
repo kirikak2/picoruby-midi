@@ -47,6 +47,7 @@ script is doing:
 ```ruby
 MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.sam2695)              # everything
 MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.amy, channel: 0)      # channel 1 only
+MIDI.route(MIDIDevices.usb_midi_device, MIDIDevices.sam2695, channel: :clock)  # clock / start / stop / SPP only
 MIDI.unroute(MIDIDevices.usb_midi_host)                                 # all routes from it
 MIDI.unroute_all
 ```
@@ -116,7 +117,8 @@ MIDI.on_bpm_change { |new_bpm| puts "BPM is now #{new_bpm}" }
   don't drop incoming events.
 - `MIDI.route(from, to, channel: nil)` - Forward messages from one transport
   (or `MIDI::Device`) to another in C. `channel:` 0..15 passes only that
-  channel's voice messages; `nil` passes every channel plus clock / start /
+  channel's voice messages; `:clock` only timing clock, start / continue /
+  stop and song position; `nil` passes every channel plus clock / start /
   stop / SysEx. Returns `false` when the route table (8 entries) is full.
   Returns a `MIDI::Route` (`#filter`, `#unfilter`, `#unroute`).
 - `MIDI.unroute(from, to = nil)` / `MIDI.unroute_all` - Remove routes (and

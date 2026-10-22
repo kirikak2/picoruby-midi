@@ -33,12 +33,16 @@ extern "C" {
 
 #define MIDI_ROUTE_MAX          8
 #define MIDI_ROUTE_ALL_CHANNELS (-1)
+/* A route's "channel" that passes only what synchronises: timing clock,
+ * start / continue / stop and song position pointer. */
+#define MIDI_ROUTE_CLOCK_ONLY   (-2)
 
 /* Forward everything from transport `src_bit` to the transports in
  * `dst_mask`. channel is 0..15 to pass only that channel's voice messages,
- * or MIDI_ROUTE_ALL_CHANNELS to pass every channel plus system messages
- * (clock, start / stop, SysEx). A route to the same source and channel as
- * an existing one adds its destinations to it.
+ * MIDI_ROUTE_ALL_CHANNELS to pass every channel plus system messages
+ * (clock, start / stop, SysEx), or MIDI_ROUTE_CLOCK_ONLY for the clock alone.
+ * A route to the same source and channel as an existing one adds its
+ * destinations to it.
  * Returns 0, or -1 when the arguments are invalid (src_bit not a single
  * bit, an empty destination, a destination equal to the source) or the
  * table is full. */

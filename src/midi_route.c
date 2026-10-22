@@ -11,7 +11,7 @@
 typedef struct {
     volatile uint8_t src;    /* single transport bit; 0 = slot unused */
     volatile uint8_t dst;    /* transport mask */
-    volatile int8_t channel; /* 0..15, or MIDI_ROUTE_ALL_CHANNELS */
+    volatile int8_t channel; /* 0..15, MIDI_ROUTE_ALL_CHANNELS or MIDI_ROUTE_CLOCK_ONLY */
 } midi_route_t;
 
 typedef struct {
@@ -39,7 +39,7 @@ int MIDI_route_add(uint8_t src_bit, uint8_t dst_mask, int channel)
     if (!single_bit(src_bit)) return -1;
     dst_mask &= (uint8_t)~src_bit;            /* no echo back to the source */
     if (dst_mask == 0) return -1;
-    if (channel < MIDI_ROUTE_ALL_CHANNELS || channel > 15) return -1;
+    if (channel < MIDI_ROUTE_CLOCK_ONLY || channel > 15) return -1;
 
     for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
         if (g_routes[i].src == src_bit && g_routes[i].channel == channel) {
@@ -144,14 +144,28 @@ static int packet_channel(uint8_t cin, uint8_t b1)
     }
 }
 
+/* Timing clock, start / continue / stop, song position pointer */
+static bool packet_is_clock(uint8_t cin, uint8_t b1)
+{
+    switch (cin & 0x0F) {
+    case 0xF:   /* single byte */
+        return b1 == 0xF8 || b1 == 0xFA || b1 == 0xFB || b1 == 0xFC;
+    case 0x3:   /* three-byte system common */
+        return b1 == 0xF2;
+    default:
+        return false;
+    }
+}
+
 uint8_t MIDI_route_targets(uint8_t src_bit, uint8_t cin, uint8_t b1)
 {
     int ch = packet_channel(cin, b1);
+    bool clock = packet_is_clock(cin, b1);
     uint8_t dst = 0;
     for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
         if (g_routes[i].src != src_bit) continue;
         int rc = g_routes[i].channel;
-        if (rc == MIDI_ROUTE_ALL_CHANNELS || rc == ch) {
+        if (rc == MIDI_ROUTE_ALL_CHANNELS || rc == ch || (rc == MIDI_ROUTE_CLOCK_ONLY && clock)) {
             dst |= g_routes[i].dst;
         }
     }

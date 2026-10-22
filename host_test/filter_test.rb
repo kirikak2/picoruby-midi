@@ -91,6 +91,15 @@ check "route object", MIDI::Route, r.class
 check "route added", [[0x01, 0x08, -1]], $stub[:routes]
 check "route started input", 1, $stub[:started]
 
+reset
+check "route clock only", MIDI::Route, MIDI.route(HOST, AMY, channel: :clock).class
+check "clock only reaches C as -2", [[0x01, 0x08, -2]], $stub[:routes]
+check_raises("bad channel symbol", "0..15 or :clock") { MIDI.route(HOST, AMY, channel: :notes) }
+check_raises("bad channel number", "0..15 or :clock") { MIDI.route(HOST, AMY, channel: 16) }
+
+reset
+r = MIDI.route(HOST, AMY)
+
 # --- filter on a route ---------------------------------------------------------
 
 h = r.filter(types: [:note_on, :note_off]) { |msg| msg.note += 12; msg }

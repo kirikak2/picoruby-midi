@@ -237,6 +237,25 @@ int main(void)
     MIDI_route_clear();
     MIDI_route_set_filter_sink(NULL);
 
+    printf("route: clock only\n");
+    reset_hits();
+    EXPECT_EQ(MIDI_route_add(0x01, 0x08, -3), -1);                  /* below CLOCK_ONLY */
+    EXPECT_EQ(MIDI_route_add(0x04, 0x08, MIDI_ROUTE_CLOCK_ONLY), 0);
+    MIDI_route_packet(0x04, 0xF, 0xF8, 0, 0);          /* clock */
+    MIDI_route_packet(0x04, 0xF, 0xFA, 0, 0);          /* start */
+    MIDI_route_packet(0x04, 0xF, 0xFC, 0, 0);          /* stop */
+    MIDI_route_packet(0x04, 0x3, 0xF2, 0x10, 0x00);    /* song position */
+    EXPECT_EQ(g_hits[3], 4);
+    MIDI_route_packet(0x04, 0x9, 0x90, 60, 100);       /* note: not passed */
+    MIDI_route_packet(0x04, 0xF, 0xFE, 0, 0);          /* active sensing: not passed */
+    MIDI_route_packet(0x04, 0x4, 0xF0, 0x7E, 0x7F);    /* SysEx: not passed */
+    EXPECT_EQ(g_hits[3], 4);
+    EXPECT_EQ(MIDI_route_add(0x04, 0x02, 0), 0);       /* a channel route beside it */
+    EXPECT_EQ(MIDI_route_targets(0x04, 0xF, 0xF8), 0x08);
+    EXPECT_EQ(MIDI_route_targets(0x04, 0x9, 0x90), 0x02);
+    MIDI_route_clear();
+    reset_hits();
+
     printf("watch\n");
     EXPECT_EQ(MIDI_route_active(), 0);
     MIDI_route_set_watch(MIDI_WATCH_APP, 0x04);

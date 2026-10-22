@@ -35,25 +35,35 @@ module MIDI
 
   # channel: value meaning "every channel, plus clock / start / stop / SysEx"
   ROUTE_ALL_CHANNELS = -1
+  # channel: :clock -- timing clock, start / continue / stop, song position only
+  ROUTE_CLOCK_ONLY = -2
 
   class << self
     # Forward messages from one transport to another.
     #
     # @param from [Object] source transport, or a MIDI::Device on it
     # @param to [Object] destination transport, or a MIDI::Device on it
-    # @param channel [Integer, nil] 0..15 to pass only that channel's voice
-    #   messages; nil (default) passes every channel and system messages
+    # @param channel [Integer, Symbol, nil] 0..15 to pass only that channel's
+    #   voice messages; :clock to pass only the clock (timing clock, start /
+    #   continue / stop, song position); nil (default) passes every channel
+    #   and system messages
     # @return [MIDI::Route, false] false if the route table is full
     def route(from, to, channel: nil)
       src = _check_source(from, "MIDI.route")
       dst = route_bit(to)
       raise ArgumentError, "MIDI.route: destination is not a registered transport" if dst == 0
       raise ArgumentError, "MIDI.route: source and destination are the same" if src == dst
-      if !channel.nil? && (channel < 0 || channel > 15)
-        raise ArgumentError, "MIDI.route: channel must be 0..15"
+      if channel == :clock
+        ch = ROUTE_CLOCK_ONLY
+      elsif channel.nil?
+        ch = ROUTE_ALL_CHANNELS
+      elsif channel.is_a?(Integer) && channel >= 0 && channel <= 15
+        ch = channel
+      else
+        raise ArgumentError, "MIDI.route: channel must be 0..15 or :clock"
       end
 
-      return false if _route_add(src, dst, channel.nil? ? ROUTE_ALL_CHANNELS : channel) != 0
+      return false if _route_add(src, dst, ch) != 0
       _start_source(from, src)
       Route.new(from, to, channel)
     end
