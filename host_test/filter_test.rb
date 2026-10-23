@@ -98,6 +98,15 @@ check_raises("bad channel symbol", "0..15 or :clock") { MIDI.route(HOST, AMY, ch
 check_raises("bad channel number", "0..15 or :clock") { MIDI.route(HOST, AMY, channel: 16) }
 
 reset
+check "route several", MIDI::Route, MIDI.route(HOST, AMY, channel: [0, 9, :clock]).class
+check "several reach C as a selection", [[0x01, 0x08, -3, 0x10201]], $stub[:routes]
+check "several read back", [0, 9, :clock], MIDI._route_channel(-3, 0x10201)
+check "one read back", 9, MIDI._route_channel(9, 0x200)
+check "all read back", nil, MIDI._route_channel(-1, 0x20000)
+check_raises("bad channel in a list", "0..15 or :clock") { MIDI.route(HOST, AMY, channel: [0, 16]) }
+check_raises("empty channel list", "not be empty") { MIDI.route(HOST, AMY, channel: []) }
+
+reset
 r = MIDI.route(HOST, AMY)
 
 # --- filter on a route ---------------------------------------------------------

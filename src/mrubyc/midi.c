@@ -540,6 +540,21 @@ c_midi_route_add(mrbc_vm *vm, mrbc_value v[], int argc)
 }
 
 /*
+ * MIDI._route_add_sel(src_bit, dst_mask, selection) -> 0 / -1
+ * selection: MIDI_ROUTE_SEL_* (channel bits 0..15, clock, all).
+ */
+static void
+c_midi_route_add_sel(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc < 3) {
+        SET_INT_RETURN(-1);
+        return;
+    }
+    SET_INT_RETURN(MIDI_route_add_selection((uint8_t)GET_INT_ARG(1), (uint8_t)GET_INT_ARG(2),
+                                            (uint32_t)GET_INT_ARG(3)));
+}
+
+/*
  * MIDI._route_remove(src_bit, dst_mask) -> number of routes dropped
  */
 static void
@@ -596,20 +611,20 @@ c_midi_route_targets_of(mrbc_vm *vm, mrbc_value v[], int argc)
 }
 
 /*
- * MIDI._route_get(i) -> [src_bit, dst_mask, channel] or nil
+ * MIDI._route_get(i) -> [src_bit, dst_mask, channel, selection] or nil
  */
 static void
 c_midi_route_get(mrbc_vm *vm, mrbc_value v[], int argc)
 {
     uint8_t src, dst;
-    int ch;
-    if (argc < 1 || !MIDI_route_get((int)GET_INT_ARG(1), &src, &dst, &ch)) {
+    uint32_t sel;
+    if (argc < 1 || !MIDI_route_get_selection((int)GET_INT_ARG(1), &src, &dst, &sel)) {
         SET_NIL_RETURN();
         return;
     }
-    int vals[3] = { src, dst, ch };
-    mrbc_value arr = mrbc_array_new(vm, 3);
-    for (int i = 0; i < 3; i++) {
+    int vals[4] = { src, dst, MIDI_route_channel(sel), (int)sel };
+    mrbc_value arr = mrbc_array_new(vm, 4);
+    for (int i = 0; i < 4; i++) {
         mrbc_value iv = mrbc_integer_value(vals[i]);
         mrbc_array_set(&arr, i, &iv);
     }
@@ -766,6 +781,7 @@ mrbc_midi_init(mrbc_vm *vm)
 
     /* Routing (MIDI.route) */
     mrbc_define_method(vm, module_MIDI, "_route_add", c_midi_route_add);
+    mrbc_define_method(vm, module_MIDI, "_route_add_sel", c_midi_route_add_sel);
     mrbc_define_method(vm, module_MIDI, "_route_remove", c_midi_route_remove);
     mrbc_define_method(vm, module_MIDI, "_route_clear", c_midi_route_clear);
     mrbc_define_method(vm, module_MIDI, "_route_start", c_midi_route_start);

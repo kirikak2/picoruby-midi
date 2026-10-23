@@ -11,7 +11,7 @@
 typedef struct {
     volatile uint8_t src;    /* single transport bit; 0 = slot unused */
     volatile uint8_t dst;    /* transport mask */
-    volatile int8_t channel; /* 0..15, MIDI_ROUTE_ALL_CHANNELS or MIDI_ROUTE_CLOCK_ONLY */
+    volatile uint32_t sel;   /* MIDI_ROUTE_SEL_* */
 } midi_route_t;
 
 typedef struct {
@@ -34,15 +34,41 @@ static bool single_bit(uint8_t b)
     return b != 0 && (b & (b - 1)) == 0;
 }
 
+uint32_t MIDI_route_selection(int channel)
+{
+    if (channel == MIDI_ROUTE_ALL_CHANNELS) return MIDI_ROUTE_SEL_ALL;
+    if (channel == MIDI_ROUTE_CLOCK_ONLY) return MIDI_ROUTE_SEL_CLOCK;
+    if (channel >= 0 && channel <= 15) return 1u << channel;
+    return 0;
+}
+
+int MIDI_route_channel(uint32_t sel)
+{
+    if (sel & MIDI_ROUTE_SEL_ALL) return MIDI_ROUTE_ALL_CHANNELS;
+    if (sel == MIDI_ROUTE_SEL_CLOCK) return MIDI_ROUTE_CLOCK_ONLY;
+    for (int ch = 0; ch < 16; ch++) {
+        if (sel == (1u << ch)) return ch;
+    }
+    return MIDI_ROUTE_SEVERAL;
+}
+
 int MIDI_route_add(uint8_t src_bit, uint8_t dst_mask, int channel)
+{
+    uint32_t sel = MIDI_route_selection(channel);
+    if (sel == 0) return -1;
+    return MIDI_route_add_selection(src_bit, dst_mask, sel);
+}
+
+int MIDI_route_add_selection(uint8_t src_bit, uint8_t dst_mask, uint32_t sel)
 {
     if (!single_bit(src_bit)) return -1;
     dst_mask &= (uint8_t)~src_bit;            /* no echo back to the source */
     if (dst_mask == 0) return -1;
-    if (channel < MIDI_ROUTE_CLOCK_ONLY || channel > 15) return -1;
+    if (sel == 0 || (sel & ~(MIDI_ROUTE_SEL_CHANNELS | MIDI_ROUTE_SEL_CLOCK | MIDI_ROUTE_SEL_ALL))) return -1;
+    if ((sel & MIDI_ROUTE_SEL_ALL) && sel != MIDI_ROUTE_SEL_ALL) return -1;
 
     for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
-        if (g_routes[i].src == src_bit && g_routes[i].channel == channel) {
+        if (g_routes[i].src == src_bit && g_routes[i].sel == sel) {
             g_routes[i].dst |= dst_mask;
             return 0;
         }
@@ -50,7 +76,7 @@ int MIDI_route_add(uint8_t src_bit, uint8_t dst_mask, int channel)
     for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
         if (g_routes[i].src == 0) {
             g_routes[i].dst = dst_mask;
-            g_routes[i].channel = (int8_t)channel;
+            g_routes[i].sel = sel;
             g_routes[i].src = src_bit;        /* last: publishes the slot */
             return 0;
         }
@@ -120,14 +146,22 @@ bool MIDI_route_from(uint8_t src_bit)
     return (MIDI_route_watched() & src_bit) != 0;
 }
 
-bool MIDI_route_get(int i, uint8_t *src_bit, uint8_t *dst_mask, int *channel)
+bool MIDI_route_get_selection(int i, uint8_t *src_bit, uint8_t *dst_mask, uint32_t *sel)
 {
     if (i < 0 || i >= MIDI_ROUTE_MAX) return false;
     uint8_t src = g_routes[i].src;
     if (src == 0) return false;
     if (src_bit) *src_bit = src;
     if (dst_mask) *dst_mask = g_routes[i].dst;
-    if (channel) *channel = g_routes[i].channel;
+    if (sel) *sel = g_routes[i].sel;
+    return true;
+}
+
+bool MIDI_route_get(int i, uint8_t *src_bit, uint8_t *dst_mask, int *channel)
+{
+    uint32_t sel;
+    if (!MIDI_route_get_selection(i, src_bit, dst_mask, &sel)) return false;
+    if (channel) *channel = MIDI_route_channel(sel);
     return true;
 }
 
@@ -164,8 +198,9 @@ uint8_t MIDI_route_targets(uint8_t src_bit, uint8_t cin, uint8_t b1)
     uint8_t dst = 0;
     for (int i = 0; i < MIDI_ROUTE_MAX; i++) {
         if (g_routes[i].src != src_bit) continue;
-        int rc = g_routes[i].channel;
-        if (rc == MIDI_ROUTE_ALL_CHANNELS || rc == ch || (rc == MIDI_ROUTE_CLOCK_ONLY && clock)) {
+        uint32_t sel = g_routes[i].sel;
+        if ((sel & MIDI_ROUTE_SEL_ALL) || (ch >= 0 && (sel & (1u << ch))) ||
+            (clock && (sel & MIDI_ROUTE_SEL_CLOCK))) {
             dst |= g_routes[i].dst;
         }
     }

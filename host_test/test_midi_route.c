@@ -256,6 +256,40 @@ int main(void)
     MIDI_route_clear();
     reset_hits();
 
+    printf("route: selections\n");
+    reset_hits();
+    EXPECT_EQ(MIDI_route_selection(MIDI_ROUTE_ALL_CHANNELS), MIDI_ROUTE_SEL_ALL);
+    EXPECT_EQ(MIDI_route_selection(MIDI_ROUTE_CLOCK_ONLY), MIDI_ROUTE_SEL_CLOCK);
+    EXPECT_EQ(MIDI_route_selection(9), 0x200);
+    EXPECT_EQ(MIDI_route_selection(16), 0);
+    EXPECT_EQ(MIDI_route_add_selection(0x01, 0x08, 0), -1);                       /* empty */
+    EXPECT_EQ(MIDI_route_add_selection(0x01, 0x08, MIDI_ROUTE_SEL_ALL | 1), -1);  /* ALL is alone */
+    EXPECT_EQ(MIDI_route_add_selection(0x01, 0x08, 1u << 18), -1);                /* unknown bit */
+    uint32_t sel = 0x0001 | 0x0200 | MIDI_ROUTE_SEL_CLOCK;           /* channels 1, 10 + clock */
+    EXPECT_EQ(MIDI_route_add_selection(0x01, 0x08, sel), 0);
+    EXPECT_EQ(MIDI_route_add_selection(0x01, 0x02, sel), 0);          /* merged */
+    {
+        uint8_t src = 0, dst = 0;
+        uint32_t got = 0;
+        int ch = 0;
+        EXPECT_EQ(MIDI_route_get_selection(0, &src, &dst, &got), 1);
+        EXPECT_EQ(dst, 0x0A);
+        EXPECT_EQ(got, sel);
+        EXPECT_EQ(MIDI_route_get(0, NULL, NULL, &ch), 1);
+        EXPECT_EQ(ch, MIDI_ROUTE_SEVERAL);
+        EXPECT_EQ(MIDI_route_get(1, NULL, NULL, NULL), 0);            /* one slot only */
+    }
+    EXPECT_EQ(MIDI_route_targets(0x01, 0x9, 0x90), 0x0A);  /* channel 1 */
+    EXPECT_EQ(MIDI_route_targets(0x01, 0x9, 0x99), 0x0A);  /* channel 10 */
+    EXPECT_EQ(MIDI_route_targets(0x01, 0x9, 0x91), 0);     /* channel 2 */
+    EXPECT_EQ(MIDI_route_targets(0x01, 0xF, 0xF8), 0x0A);  /* clock */
+    EXPECT_EQ(MIDI_route_targets(0x01, 0x4, 0xF0), 0);     /* SysEx */
+    EXPECT_EQ(MIDI_route_channel(0x0200), 9);
+    EXPECT_EQ(MIDI_route_channel(MIDI_ROUTE_SEL_ALL), MIDI_ROUTE_ALL_CHANNELS);
+    EXPECT_EQ(MIDI_route_channel(MIDI_ROUTE_SEL_CLOCK), MIDI_ROUTE_CLOCK_ONLY);
+    MIDI_route_clear();
+    reset_hits();
+
     printf("watch\n");
     EXPECT_EQ(MIDI_route_active(), 0);
     MIDI_route_set_watch(MIDI_WATCH_APP, 0x04);

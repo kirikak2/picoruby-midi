@@ -36,6 +36,28 @@ extern "C" {
 /* A route's "channel" that passes only what synchronises: timing clock,
  * start / continue / stop and song position pointer. */
 #define MIDI_ROUTE_CLOCK_ONLY   (-2)
+/* What MIDI_route_get() gives for a route that passes several of the above
+ * (see MIDI_route_get_selection). */
+#define MIDI_ROUTE_SEVERAL      (-3)
+
+/*
+ * A route's selection: what it passes, as a set. Bits 0..15 are the
+ * channels' voice messages, MIDI_ROUTE_SEL_CLOCK the clock (as for
+ * MIDI_ROUTE_CLOCK_ONLY), and MIDI_ROUTE_SEL_ALL everything -- every
+ * channel plus all system messages, SysEx included. ALL is on its own;
+ * the others combine (channels 1 and 10 plus the clock, say).
+ */
+#define MIDI_ROUTE_SEL_CHANNELS 0xFFFFu
+#define MIDI_ROUTE_SEL_CLOCK    (1u << 16)
+#define MIDI_ROUTE_SEL_ALL      (1u << 17)
+
+/* The selection of a channel argument (0..15, MIDI_ROUTE_ALL_CHANNELS or
+ * MIDI_ROUTE_CLOCK_ONLY); 0 for anything else. */
+uint32_t MIDI_route_selection(int channel);
+
+/* The channel argument a selection stands for, or MIDI_ROUTE_SEVERAL when
+ * it holds more than one channel / the clock. */
+int MIDI_route_channel(uint32_t sel);
 
 /* Forward everything from transport `src_bit` to the transports in
  * `dst_mask`. channel is 0..15 to pass only that channel's voice messages,
@@ -47,6 +69,12 @@ extern "C" {
  * bit, an empty destination, a destination equal to the source) or the
  * table is full. */
 int MIDI_route_add(uint8_t src_bit, uint8_t dst_mask, int channel);
+
+/* MIDI_route_add with a selection (MIDI_ROUTE_SEL_*): one route passing
+ * every channel / the clock in it. A route with the same source and
+ * selection takes the destinations. Returns 0, or -1 as MIDI_route_add
+ * (also for an empty selection, or ALL combined with anything). */
+int MIDI_route_add_selection(uint8_t src_bit, uint8_t dst_mask, uint32_t sel);
 
 /* Remove the destinations in `dst_mask` from every route out of `src_bit`
  * (all of them for dst_mask 0xFF); routes left without a destination are
@@ -101,8 +129,10 @@ void MIDI_route_packet(uint8_t src_bit, uint8_t cin,
 void    MIDI_route_set_watch(int owner, uint8_t src_mask);
 uint8_t MIDI_route_watched(void);
 
-/* Read route `i` (0..MIDI_ROUTE_MAX-1). Returns false for an unused slot. */
+/* Read route `i` (0..MIDI_ROUTE_MAX-1). Returns false for an unused slot.
+ * channel is MIDI_route_channel() of its selection. */
 bool MIDI_route_get(int i, uint8_t *src_bit, uint8_t *dst_mask, int *channel);
+bool MIDI_route_get_selection(int i, uint8_t *src_bit, uint8_t *dst_mask, uint32_t *sel);
 
 /*
  * Filters (MIDI.filter / MIDI.on)

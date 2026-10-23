@@ -17,6 +17,11 @@ module MIDI
       0
     end
 
+    def _route_add_sel(src, dst, sel)
+      $stub[:routes] << [src, dst, MIDI::ROUTE_SEVERAL, sel]
+      0
+    end
+
     def _route_remove(src, dst)
       before = $stub[:routes].size
       $stub[:routes].delete_if { |r| r[0] == src && (r[1] & dst) != 0 }

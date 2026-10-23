@@ -37,15 +37,22 @@ module MIDI
   ROUTE_ALL_CHANNELS = -1
   # channel: :clock -- timing clock, start / continue / stop, song position only
   ROUTE_CLOCK_ONLY = -2
+  # MIDI._route_get's channel for a route passing several channels / the clock
+  ROUTE_SEVERAL = -3
+  # A route's selection (MIDI._route_get's 4th element): bits 0..15 the
+  # channels, then the clock, then everything
+  ROUTE_SEL_CLOCK = 0x10000
+  ROUTE_SEL_ALL = 0x20000
 
   class << self
     # Forward messages from one transport to another.
     #
     # @param from [Object] source transport, or a MIDI::Device on it
     # @param to [Object] destination transport, or a MIDI::Device on it
-    # @param channel [Integer, Symbol, nil] 0..15 to pass only that channel's
-    #   voice messages; :clock to pass only the clock (timing clock, start /
-    #   continue / stop, song position); nil (default) passes every channel
+    # @param channel [Integer, Symbol, Array, nil] 0..15 to pass only that
+    #   channel's voice messages; :clock to pass only the clock (timing
+    #   clock, start / continue / stop, song position); an Array of those
+    #   for several (`[0, 9, :clock]`); nil (default) passes every channel
     #   and system messages
     # @return [MIDI::Route, false] false if the route table is full
     def route(from, to, channel: nil)
@@ -53,19 +60,47 @@ module MIDI
       dst = route_bit(to)
       raise ArgumentError, "MIDI.route: destination is not a registered transport" if dst == 0
       raise ArgumentError, "MIDI.route: source and destination are the same" if src == dst
-      if channel == :clock
-        ch = ROUTE_CLOCK_ONLY
-      elsif channel.nil?
-        ch = ROUTE_ALL_CHANNELS
-      elsif channel.is_a?(Integer) && channel >= 0 && channel <= 15
-        ch = channel
-      else
-        raise ArgumentError, "MIDI.route: channel must be 0..15 or :clock"
-      end
 
-      return false if _route_add(src, dst, ch) != 0
+      if channel.is_a?(Array)
+        raise ArgumentError, "MIDI.route: channel must not be empty" if channel.empty?
+        sel = 0
+        channel.each { |c| sel |= _route_selection(c) }
+        result = _route_add_sel(src, dst, sel)
+      elsif channel.nil?
+        result = _route_add(src, dst, ROUTE_ALL_CHANNELS)
+      else
+        _route_selection(channel)   # Raises for a bad one
+        result = _route_add(src, dst, channel == :clock ? ROUTE_CLOCK_ONLY : channel)
+      end
+      return false if result != 0
       _start_source(from, src)
       Route.new(from, to, channel)
+    end
+
+    # Internal: the selection bit of one channel: argument (0..15 or :clock)
+    def _route_selection(channel)
+      return ROUTE_SEL_CLOCK if channel == :clock
+      if channel.is_a?(Integer) && channel >= 0 && channel <= 15
+        return 1 << channel
+      end
+      raise ArgumentError, "MIDI.route: channel must be 0..15 or :clock"
+    end
+
+    # Internal: a route's channel as MIDI.route takes it -- nil, 0..15,
+    # :clock or an Array of those -- from MIDI._route_get's channel and
+    # selection
+    def _route_channel(ch, sel)
+      return :clock if ch == ROUTE_CLOCK_ONLY
+      return ch if ch >= 0
+      return nil if ch != ROUTE_SEVERAL || sel.nil?
+      list = []
+      c = 0
+      while c < 16
+        list << c if (sel & (1 << c)) != 0
+        c += 1
+      end
+      list << :clock if (sel & ROUTE_SEL_CLOCK) != 0
+      list
     end
 
     # Stop forwarding from `from` to `to`, or everything from `from` when

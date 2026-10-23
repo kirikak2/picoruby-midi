@@ -137,6 +137,15 @@ mrb_midi_route_add(mrb_state *mrb, mrb_value self)
     return mrb_fixnum_value(MIDI_route_add((uint8_t)src, (uint8_t)dst, (int)channel));
 }
 
+/* MIDI._route_add_sel(src_bit, dst_mask, selection) -> 0 / -1 */
+static mrb_value
+mrb_midi_route_add_sel(mrb_state *mrb, mrb_value self)
+{
+    mrb_int src, dst, sel;
+    mrb_get_args(mrb, "iii", &src, &dst, &sel);
+    return mrb_fixnum_value(MIDI_route_add_selection((uint8_t)src, (uint8_t)dst, (uint32_t)sel));
+}
+
 /* MIDI._route_remove(src_bit, dst_mask) -> number of routes dropped */
 static mrb_value
 mrb_midi_route_remove(mrb_state *mrb, mrb_value self)
@@ -181,19 +190,20 @@ mrb_midi_route_targets_of(mrb_state *mrb, mrb_value self)
     return mrb_fixnum_value(all);
 }
 
-/* MIDI._route_get(i) -> [src_bit, dst_mask, channel] or nil */
+/* MIDI._route_get(i) -> [src_bit, dst_mask, channel, selection] or nil */
 static mrb_value
 mrb_midi_route_get(mrb_state *mrb, mrb_value self)
 {
     mrb_int i;
     mrb_get_args(mrb, "i", &i);
     uint8_t src, dst;
-    int ch;
-    if (!MIDI_route_get((int)i, &src, &dst, &ch)) return mrb_nil_value();
-    mrb_value a = mrb_ary_new_capa(mrb, 3);
+    uint32_t sel;
+    if (!MIDI_route_get_selection((int)i, &src, &dst, &sel)) return mrb_nil_value();
+    mrb_value a = mrb_ary_new_capa(mrb, 4);
     mrb_ary_push(mrb, a, mrb_fixnum_value(src));
     mrb_ary_push(mrb, a, mrb_fixnum_value(dst));
-    mrb_ary_push(mrb, a, mrb_fixnum_value(ch));
+    mrb_ary_push(mrb, a, mrb_fixnum_value(MIDI_route_channel(sel)));
+    mrb_ary_push(mrb, a, mrb_fixnum_value((mrb_int)sel));
     return a;
 }
 
@@ -640,6 +650,8 @@ mrb_picoruby_midi_gem_init(mrb_state *mrb)
     /* Routing (MIDI.route) */
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_add),
                                   mrb_midi_route_add, MRB_ARGS_REQ(3));
+    mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_add_sel),
+                                  mrb_midi_route_add_sel, MRB_ARGS_REQ(3));
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_remove),
                                   mrb_midi_route_remove, MRB_ARGS_REQ(2));
     mrb_define_module_function_id(mrb, module_MIDI, MRB_SYM(_route_clear),

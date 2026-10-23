@@ -48,6 +48,7 @@ script is doing:
 MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.sam2695)              # everything
 MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.amy, channel: 0)      # channel 1 only
 MIDI.route(MIDIDevices.usb_midi_device, MIDIDevices.sam2695, channel: :clock)  # clock / start / stop / SPP only
+MIDI.route(MIDIDevices.usb_midi_host, MIDIDevices.amy, channel: [0, 9, :clock]) # channels 1 and 10 plus the clock
 MIDI.unroute(MIDIDevices.usb_midi_host)                                 # all routes from it
 MIDI.unroute_all
 ```
