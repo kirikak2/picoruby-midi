@@ -387,6 +387,28 @@ TEST(test_external_bpm_120)
     midi_parser_free(p);
 }
 
+/* As on the device: the input task stamps the clocks when it wakes, once
+ * every 10 ms. Past the first window the ring buffer wraps. */
+TEST(test_external_bpm_quantized)
+{
+    midi_parser_t *p = midi_parser_new(MIDI_SOURCE_USB);
+    midi_event_t ev;
+    const double period_us = 60000000.0 / (120.0 * 24.0);
+    float lo = 1000.0f, hi = 0.0f;
+    for (int i = 0; i < 24 * 40; i++) {
+        uint64_t arrive = (uint64_t)(i * period_us) + 300;
+        uint64_t stamped = (arrive / 10000 + 1) * 10000;
+        midi_parser_feed_raw(p, 0xF8, stamped, &ev);
+        if (i >= 48) {
+            float bpm = midi_parser_get_external_bpm(p);
+            if (bpm < lo) lo = bpm;
+            if (bpm > hi) hi = bpm;
+        }
+    }
+    EXPECT_TRUE(lo > 119.5f && hi < 120.5f);
+    midi_parser_free(p);
+}
+
 TEST(test_external_bpm_reset)
 {
     midi_parser_t *p = midi_parser_new(MIDI_SOURCE_USB);
@@ -449,6 +471,7 @@ int main(void)
     run_test_usb_realtime_via_cin0F();
     run_test_usb_sysex_split_across_packets();
     run_test_external_bpm_120();
+    run_test_external_bpm_quantized();
     run_test_external_bpm_reset();
     run_test_reset_clears_running_status();
 

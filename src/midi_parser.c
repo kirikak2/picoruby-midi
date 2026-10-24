@@ -121,22 +121,26 @@ static void track_external_clock(midi_parser_t *p, uint64_t now_us)
         p->clock_timestamp_count++;
     }
 
-    if (p->clock_timestamp_count >= MIDI_EXTERNAL_CLOCK_MIN_SAMPLES) {
-        int oldest_idx, newest_idx;
-        if (p->clock_timestamp_count < MIDI_EXTERNAL_CLOCK_SAMPLES) {
-            oldest_idx = 0;
-            newest_idx = p->clock_timestamp_count - 1;
-        } else {
-            oldest_idx = p->clock_timestamp_index;
-            newest_idx =
-                (p->clock_timestamp_index + MIDI_EXTERNAL_CLOCK_SAMPLES - 1)
-                % MIDI_EXTERNAL_CLOCK_SAMPLES;
+    /* The interval is the least-squares slope of time over clock number,
+     * not (newest - oldest) / n: the timestamps are taken when the input
+     * task gets to the bytes, which it does once a tick (10 ms), and the two
+     * end points alone carry all of that error (about 1 BPM at 120). The
+     * slope weighs every clock in the window and wobbles about a third as
+     * much.
+     *
+     * With x = 0..n-1 and y = t - t0:
+     *   slope = sum((2x - (n-1)) * y) * 6 / (n * (n^2 - 1)) */
+    int n = p->clock_timestamp_count;
+    if (n >= MIDI_EXTERNAL_CLOCK_MIN_SAMPLES) {
+        int oldest_idx = n < MIDI_EXTERNAL_CLOCK_SAMPLES ? 0 : p->clock_timestamp_index;
+        int64_t t0 = p->clock_timestamps[oldest_idx];
+        int64_t num = 0;
+        for (int x = 0; x < n; x++) {
+            int64_t y = p->clock_timestamps[(oldest_idx + x) % MIDI_EXTERNAL_CLOCK_SAMPLES] - t0;
+            num += (int64_t)(2 * x - (n - 1)) * y;
         }
-        int64_t total =
-            p->clock_timestamps[newest_idx] - p->clock_timestamps[oldest_idx];
-        int n = p->clock_timestamp_count - 1;
-        if (total > 0 && n > 0) {
-            float avg = (float)total / (float)n;
+        if (num > 0) {
+            float avg = (float)(num * 6) / ((float)n * (float)(n * n - 1));
             p->external_bpm = 60000000.0f / (avg * (float)MIDI_PPQ);
         }
     }

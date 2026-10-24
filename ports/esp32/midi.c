@@ -207,6 +207,7 @@ static esp_timer_handle_t g_clock_timer = NULL;
 static uint8_t g_clock_bit;
 static float g_clock_follow_bpm;              /* 0: not following */
 static uint64_t g_clock_period_us;            /* Period the timer runs at */
+static volatile uint32_t g_clock_next_period_us; /* Period from the next tick on (0: none) */
 static volatile bool g_clock_running;         /* Between Start and Stop */
 static volatile uint32_t g_clock_count;       /* Ticks since init */
 static volatile uint32_t g_clock_last_tick_us; /* Low 32 bits of the last tick's time */
@@ -262,6 +263,12 @@ static void clock_timer_callback(void *arg)
     (void)arg;
     g_clock_last_tick_us = (uint32_t)esp_timer_get_time();
     g_clock_count++;
+    /* A new tempo starts here, a whole period after this tick */
+    uint32_t next = __atomic_exchange_n(&g_clock_next_period_us, 0, __ATOMIC_RELAXED);
+    if (next) {
+        g_clock_period_us = next;
+        esp_timer_restart(g_clock_timer, next);
+    }
     if (MIDI_route_from(g_clock_bit)) clock_send(MIDI_STATUS_TIMING_CLOCK);
     midi_clock_callback_t cb = g_clock_user_cb;
     if (cb) cb();
@@ -280,14 +287,17 @@ static uint64_t clock_period_us(float bpm)
     return (uint64_t)(60000000.0f / (bpm * 24.0f));
 }
 
-/* Run the timer at the current tempo's period (from now on when it changed). */
+/* Run the timer at the current tempo's period, from the next tick on.
+ * Restarting the timer here would start the period afresh from now and
+ * drop the time since the last tick: in Sync mode the follow BPM changes
+ * several times a second, and each change stretched one clock by up to a
+ * whole period (a receiver saw the tempo drag and wobble). */
 static void clock_retime(void)
 {
     if (g_clock_timer == NULL) return;
-    uint64_t period = clock_period_us(clock_current_bpm());
-    if (period == g_clock_period_us) return;
-    g_clock_period_us = period;
-    esp_timer_restart(g_clock_timer, period);
+    uint32_t period = (uint32_t)clock_period_us(clock_current_bpm());
+    __atomic_store_n(&g_clock_next_period_us,
+                     period == g_clock_period_us ? 0 : period, __ATOMIC_RELAXED);
 }
 
 int MIDI_Clock_init(void)
@@ -311,6 +321,7 @@ int MIDI_Clock_init(void)
         return -1;
     }
     g_clock_period_us = clock_period_us(clock_current_bpm());
+    g_clock_next_period_us = 0;
     g_clock_last_tick_us = (uint32_t)esp_timer_get_time();
     esp_timer_start_periodic(g_clock_timer, g_clock_period_us);
 
@@ -328,6 +339,7 @@ void MIDI_Clock_deinit(void)
         g_clock_timer = NULL;
     }
     g_clock_period_us = 0;
+    g_clock_next_period_us = 0;
     g_clock_running = false;
 }
 
@@ -363,7 +375,10 @@ void MIDI_Clock_start(void)
     if (MIDI_Clock_init() != 0) return;
     g_clock_running = true;
     clock_send(MIDI_STATUS_START);
-    /* The first clock after Start marks the downbeat: start the period afresh */
+    /* The first clock after Start marks the downbeat: start the period afresh
+     * (at the new tempo, if one is waiting for the next tick) */
+    uint32_t next = __atomic_exchange_n(&g_clock_next_period_us, 0, __ATOMIC_RELAXED);
+    if (next) g_clock_period_us = next;
     esp_timer_restart(g_clock_timer, g_clock_period_us);
     g_clock_last_tick_us = (uint32_t)esp_timer_get_time();
 }
