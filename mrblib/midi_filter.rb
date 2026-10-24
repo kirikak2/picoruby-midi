@@ -30,6 +30,10 @@ $__midi_source_info__ = {}
 # Called at the top of every run_filters (UI::MIDIDevices.input follows the
 # selected IN from one)
 $__midi_filter_hooks__ = []
+# Chains of named filters (midi_filter_class.rb): src * 0x1000 + dst => chain
+$__midi_chains__ = {}
+# MIDI::Filter#every timers, run from run_filters
+$__midi_filter_timers__ = []
 
 module MIDI
   # Destination of a listener (MIDI.on): Ruby itself, not a transport.
@@ -279,6 +283,15 @@ module MIDI
       src = route_bit(from)
       only = to.nil? ? nil : route_bit(to)
       removed = 0
+      # Chains of named filters on those routes go too (their notes off)
+      if $__midi_chains__.size > 0
+        $__midi_chains__.values.each do |c|
+          next unless c.src == src && (only.nil? || c.dst == only)
+          next unless handler.nil? || handler.equal?(c.block)
+          _chain_drop(c.src, c.dst)
+          removed += 1
+        end
+      end
       $__midi_filters__.keys.each do |key|
         next unless key / 0x1000 == src
         dst = key % 0x1000
@@ -358,6 +371,7 @@ module MIDI
     def run_filters(max = 64)
       count = 0
       $__midi_filter_hooks__.each { |h| h.call } if $__midi_filter_hooks__.size > 0
+      _run_timers if $__midi_filter_timers__.size > 0
       return 0 unless $__midi_filter_ready__
       while count < max
         ev = _filter_pop
@@ -375,10 +389,11 @@ module MIDI
     end
 
     # Internal: wait up to `ms` for the filter queue, running the filters as
-    # events come in. A plain sleep when there are no filters.
+    # events come in and MIDI::Filter#every timers as they fall due. A plain
+    # sleep when there are neither.
     def _idle_ms(ms)
       ms = ms.to_i
-      if $__midi_filters__.size == 0
+      if $__midi_filters__.size == 0 && $__midi_filter_timers__.size == 0
         Kernel.sleep_ms(ms) if ms > 0
         return
       end
@@ -386,7 +401,58 @@ module MIDI
       while true
         remaining = (deadline - _uptime_ms).to_i
         break if remaining <= 0
-        run_filters if _filter_wait(remaining)
+        wait = remaining
+        due = _next_timer_ms
+        if due
+          if due <= 0
+            run_filters
+            next
+          end
+          wait = due if due < wait
+        end
+        if $__midi_filters__.size > 0
+          run_filters if _filter_wait(wait)
+        else
+          Kernel.sleep_ms(wait)
+        end
+      end
+    end
+
+    # Internal: run the timers that are due
+    def _run_timers
+      now = _uptime_ms
+      $__midi_filter_timers__.dup.each do |t|
+        next if t.cancelled? || t.next_at > now
+        t.next_at = t.next_at + t.interval
+        t.next_at = now + t.interval if t.next_at <= now
+        t._fire
+      end
+    end
+
+    # Internal: ms until the next timer is due (<= 0: now), nil for none
+    def _next_timer_ms
+      return nil if $__midi_filter_timers__.size == 0
+      now = _uptime_ms
+      best = nil
+      $__midi_filter_timers__.each do |t|
+        d = t.next_at - now
+        best = d if best.nil? || d < best
+      end
+      best
+    end
+
+    # Internal: take down the chains on (src, dst) (nil: any), their notes
+    # off and their filter entries out
+    def _chain_drop(src, dst)
+      $__midi_chains__.keys.each do |key|
+        c = $__midi_chains__[key]
+        next unless (src.nil? || c.src == src) && (dst.nil? || c.dst == dst)
+        $__midi_chains__.delete(key)
+        c.teardown
+        list = $__midi_filters__[key]
+        if list
+          _filter_store(c.src, c.dst, list.reject { |f| f[3].equal?(c.block) })
+        end
       end
     end
 

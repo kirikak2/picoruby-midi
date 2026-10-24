@@ -114,8 +114,10 @@ module MIDI
 
     # Remove every route, filter and listener.
     def unroute_all
+      _chain_drop(nil, nil) if $__midi_chains__.size > 0
       _route_clear
       $__midi_filters__ = {}
+      $__midi_clock_handler__ = nil
     end
 
     # The transport-registry bit of a transport or of a MIDI::Device's
